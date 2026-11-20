@@ -256,7 +256,7 @@
   </main>
 
   <footer>
-    데이터: 네이버 스포츠 (경기·순위·기사 목록)<br>
+    데이터: ESPN 공개 API (경기·순위·소식) · 한국어로 옮겨서 보여 줘요<br>
     기사는 제목과 3줄 요약, 원문 링크만 보여 줘요. 광고와 댓글은 없어요.
   </footer>
 </div>
@@ -286,6 +286,7 @@ const state = {
   interval: Number(localStorage.getItem("sports.interval") ?? 5),
   liveMode: localStorage.getItem("sports.live") === "1",
   directOK: null,
+  teamsKo: null,
   directTimer: null,
   directGames: null,
 };
@@ -352,8 +353,10 @@ async function loadAll(){
     getJSON("./data/today.json"),
     getJSON("./data/standings.json"),
     getJSON("./data/news.json"),
+    getJSON("./data/teams-ko.json"),
   ]);
-  const [t, s, n] = results;
+  const [t, s, n, k] = results;
+  if (k.status === "fulfilled" && k.value) state.teamsKo = k.value;
   if (t.status === "fulfilled") state.today = t.value;
   if (s.status === "fulfilled") state.standings = s.value;
   if (n.status === "fulfilled") state.news = n.value;
@@ -491,8 +494,8 @@ function renderToday(){
   }
   body.innerHTML = html;
   $("#liveInfo").textContent = state.directOK
-    ? (state.liveMode ? "실시간 연결 중 · 30초마다 새 소식" : "실시간 연결이 돼요. 🔄 를 눌러 켜 보세요")
-    : "5분마다 새로 받아요";
+    ? (state.liveMode ? "실시간 연결 중 · 1분마다 새 소식" : "실시간 연결이 돼요. 🔄 를 눌러 켜 보세요")
+    : "저장된 데이터 · 🔄 누르면 다시 시도";
 }
 
 /* ── 순위 ──────────────────────────────── */
@@ -656,7 +659,7 @@ function renderSettings(){
   $("#sUpdated").textContent = fmtUpdated(state.today?.updated || state.standings?.updated);
   $("#sGames").textContent = (state.today?.total ?? "-") + "경기";
   $("#sNews").textContent = (state.news?.total ?? "-") + "건";
-  $("#sDirect").textContent = state.directOK === null ? "확인 중…" : (state.directOK ? "가능 ✅ (30초 갱신)" : "차단됨 → 5분 자동 갱신");
+  $("#sDirect").textContent = state.directOK === null ? "확인 중…" : (state.directOK ? "가능 ✅ (1분 갱신)" : "차단됨 → 5분 자동 갱신");
 }
 
 /* ── 탭 & 새로고침 타이머 ─────────────── */
@@ -686,84 +689,145 @@ function setupLive(){
   const toggle = $("#liveToggle");
   toggle.classList.toggle("on", state.liveMode && !!state.directOK);
   if (state.liveMode && state.directOK){
-    liveTimer = setInterval(refreshDirect, 30000);
+    liveTimer = setInterval(refreshDirect, 60000);
   }
   renderToday();
 }
 
-/* ── 실시간 직접 연결 (CORS가 열려 있을 때만) ── */
-const API = "https://api-gw.sports.naver.com";
-const FOREIGN = new Set(["epl","laliga","bundesliga","seriea","ligue1","spl","eredivisie","mls","jleague","saudiarabia","facup","ucl","uel","u21","u17worldcup","wfootballetc","clubworldcup"]);
-const BY_UPPER = {kbaseball:"야구", wbaseball:"해외야구", kfootball:"축구", wfootball:"해외축구",
-  kbasketball:"농구", wbasketball:"농구", kvolleyball:"배구", wvolleyball:"배구", golf:"골프",
-  tennis:"일반", badminton:"일반", others:"일반", general:"일반"};
-const EMOJI = {야구:"⚾", 해외야구:"⚾", 축구:"⚽", 해외축구:"⚽", 농구:"🏀", 배구:"🏐", 골프:"⛳", 일반:"🏅"};
-const JUNK = /(라이브|오프너|티켓|중계|토크|특집|예고|하이라이트|다시보기|풀영상|초대석|유튜브|쇼츠|LIVE|TV\b)/;
+/* ── 실시간 직접 연결 (ESPN 공개 API · CORS 열려 있음) ── */
+const ESPN_SITE = "https://site.api.espn.com/apis/site/v2/sports";
+const ESPN_LEAGUES = [
+  {espn:"baseball/mlb", sport:"야구", name:"MLB"},
+  {espn:"basketball/nba", sport:"농구", name:"NBA"},
+  {espn:"soccer/eng.1", sport:"해외축구", name:"프리미어리그"},
+  {espn:"soccer/esp.1", sport:"해외축구", name:"라리가"},
+  {espn:"soccer/ger.1", sport:"해외축구", name:"분데스리가"},
+  {espn:"soccer/ita.1", sport:"해외축구", name:"세리에A"},
+  {espn:"soccer/uefa.champions", sport:"해외축구", name:"챔피언스리그"},
+  {espn:"golf/pga", sport:"골프", name:"PGA"},
+];
+const KO_BY_LEAGUE = {
+  "soccer/ita.1": {MIL:"AC밀란", TOR:"토리노", ROM:"로마", INT:"인터밀란", JUV:"유벤투스",
+                   NAP:"나폴리", LAZ:"라치오", ATA:"아탈란타", FIO:"피오렌티나", BOL:"볼로냐",
+                   UDI:"우디네세", GEN:"제노아"},
+  "soccer/uefa.champions": {MIL:"AC밀란", TOR:"토리노", ROM:"로마", INT:"인터밀란",
+                            JUV:"유벤투스", NAP:"나폴리", LAZ:"라치오", ATA:"아탈란타"},
+};
 
-function directSport(g){
-  const cid = (g.categoryId || "").toLowerCase();
-  const upper = (g.upperCategoryId || "").toLowerCase();
-  if (FOREIGN.has(cid)) return "해외축구";
-  return BY_UPPER[upper] || "일반";
+function teamName(team, leagueKey){
+  const abbr = (team?.abbreviation || "").toUpperCase();
+  const over = (KO_BY_LEAGUE[leagueKey] || {})[abbr];
+  if (over) return over;
+  const dict = state.teamsKo || {};
+  if (abbr && dict[abbr]) return dict[abbr];
+  return team?.shortDisplayName || team?.name || team?.displayName || "";
 }
-function directTime(g){
-  const m = /T(\d{2}):(\d{2})/.exec(g.gameDateTime || "");
-  return m ? `${m[1]}:${m[2]}` : "";
+function logoOf(team){
+  const logos = team?.logos || [];
+  if (logos.length) return logos[0]?.href || "";
+  return team?.logo || "";
 }
-function normalizeDirect(games){
-  const out = [];
-  for (const g of games){
-    const home = (g.homeTeamName || "").trim();
-    const away = (g.awayTeamName || "").trim();
-    const title = (g.title || "").trim();
-    if (!(home && away)){
-      if (!title || JUNK.test(title)) continue;
-    }
-    const sport = directSport(g);
-    const state_ = g.cancel || g.suspended ? "cancel"
-      : g.statusNum === 2 ? "live" : g.statusNum === 4 ? "done" : "upcoming";
-    out.push({
-      id: g.gameId || "", sport, emoji: EMOJI[sport] || "🏅",
-      league: g.categoryId || "", leagueName: g.leagueName || g.categoryName || "",
-      time: directTime(g), state: state_, status: g.statusInfo || "",
-      home: {name: home || title, code: g.homeTeamCode || "", emblem: g.homeTeamEmblemUrl || "", score: g.homeTeamScore},
-      away: {name: away, code: g.awayTeamCode || "", emblem: g.awayTeamEmblemUrl || "", score: g.awayTeamScore},
-      winner: g.winner || "DRAW", stadium: (g.stadium || "").trim(),
-      channel: g.broadChannel || "", onAir: !!g.gameOnAir,
-    });
+const KO_WEEK = (iso) => {
+  const d = new Date(iso);
+  return String(d.getHours()).padStart(2,"0") + ":" + String(d.getMinutes()).padStart(2,"0");
+};
+function espnStatus(comp, sport){
+  const st = comp?.status || {};
+  const stype = st.type || {};
+  const stt = stype.state || "pre";
+  const period = st.period || 0;
+  const clock = (st.displayClock || "").trim();
+  if (stt === "pre") return ["upcoming", ""];
+  if (stt === "post") return ["done", "종료"];
+  let label = "진행 중";
+  if (sport === "농구") label = period ? `${period}쿼터` : "진행 중";
+  else if (sport === "야구") label = period ? `${period}회` : "진행 중";
+  else if (sport === "해외축구" || sport === "축구") label = (period >= 2 ? "후반" : "전반") + (clock ? ` ${clock}` : "");
+  else if (sport === "골프") label = period ? `${period}라운드` : "진행 중";
+  return ["live", label];
+}
+function espnToGame(ev, lg){
+  const comps = ev.competitions || [];
+  const comp = comps[0];
+  const name = ev.name || ev.shortName || "";
+  if (!comp){
+    if (!name) return null;
+    const stt = (ev.status?.type?.state) || "pre";
+    return {id: String(ev.id || name), sport: lg.sport, emoji: SPORT_EMOJI[lg.sport] || "🏅",
+      league: lg.espn, leagueName: lg.name, time: "", date: "", state: {pre:"upcoming", in:"live", post:"done"}[stt] || "upcoming",
+      status: "", home: {name, code:"", emblem:"", score: null}, away: {name:"", code:"", emblem:"", score:null},
+      winner:"DRAW", stadium:"", channel:"", onAir:false};
   }
-  return out;
+  const cs = comp.competitors || [];
+  const home = cs.find(c => c.homeAway === "home");
+  const away = cs.find(c => c.homeAway === "away");
+  if (!home || !away) return null;
+  const [st, statusText] = espnStatus(comp, lg.sport);
+  const iso = ev.date || comp.date || "";
+  let time = "", date = "";
+  if (iso){
+    const d = new Date(iso);
+    time = String(d.getHours()).padStart(2,"0") + ":" + String(d.getMinutes()).padStart(2,"0");
+    date = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+  }
+  const num = (v) => (v === null || v === undefined || v === "") ? null : Number(v);
+  return {
+    id: String(ev.id || comp.id || ""), sport: lg.sport, emoji: SPORT_EMOJI[lg.sport] || "🏅",
+    league: lg.espn, leagueName: lg.name, time, date, state: st, status: statusText,
+    home: {name: teamName(home.team, lg.espn), code: home.team?.abbreviation || "", emblem: logoOf(home.team), score: num(home.score)},
+    away: {name: teamName(away.team, lg.espn), code: away.team?.abbreviation || "", emblem: logoOf(away.team), score: num(away.score)},
+    winner: home.winner ? "HOME" : (away.winner ? "AWAY" : "DRAW"),
+    stadium: comp.venue?.fullName || "", channel: "", onAir: st === "live",
+  };
 }
-async function fetchDirect(full){
+function espnDate(offset){
   const d = kstNow();
-  const date = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
-  const fields = full
-    ? "basic,superCategoryId,categoryName,upperCategoryId,upperCategoryName,stadium,statusNum,gameOnAir,title,broadChannel,league,leagueName"
-    : "categoryId";
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 7000);
-  try {
-    const res = await fetch(`${API}/schedule/today-games?date=${date}&fields=${fields}`, {signal: ctrl.signal, cache:"no-store"});
-    if (!res.ok) return null;
-    const json = await res.json();
-    return json?.result?.games || null;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
+  d.setDate(d.getDate() + offset);
+  return `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,"0")}${String(d.getDate()).padStart(2,"0")}`;
+}
+async function fetchEspn(){
+  const dates = [espnDate(0), espnDate(-1)];
+  const jobs = [];
+  for (const d of dates) for (const lg of ESPN_LEAGUES) jobs.push({d, lg});
+  const results = await Promise.allSettled(jobs.map(({d, lg}) =>
+    fetch(`${ESPN_SITE}/${lg.espn}/scoreboard?dates=${d}&limit=50`, {cache:"no-store"})
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(r.status)))
+      .then(j => ({d, lg, events: j.events || []}))
+  ));
+  const games = [], seen = new Set();
+  let okCount = 0;
+  for (const r of results){
+    if (r.status !== "fulfilled") continue;
+    okCount++;
+    const {d, lg, events} = r.value;
+    for (const ev of events){
+      const g = espnToGame(ev, lg);
+      if (!g) continue;
+      if (d !== dates[0] && g.state !== "done") continue;
+      const key = g.id || `${g.home.name}-${g.away.name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      games.push(g);
+    }
   }
+  if (!okCount) return null;
+  return games;
 }
 async function probeDirect(){
-  const games = await fetchDirect(false);
+  const games = await fetchEspn().catch(() => null);
   state.directOK = Array.isArray(games);
+  if (state.directOK && games.length){
+    state.directGames = games;
+    renderSportChips(); renderToday();
+  }
   if (!state.directOK) state.liveMode = false;
   renderSettings();
   setupLive();
 }
 async function refreshDirect(){
-  const games = await fetchDirect(true);
+  const games = await fetchEspn().catch(() => null);
   if (!games){ state.directOK = false; state.liveMode = false; setupLive(); renderSettings(); return; }
-  state.directGames = normalizeDirect(games);
+  state.directGames = games;
   renderSportChips(); renderToday(); renderSettings();
 }
 
@@ -787,7 +851,7 @@ function bind(){
   };
   $("#liveToggle").onclick = async () => {
     if (!state.directOK){
-      alert("지금은 실시간 직접 연결이 막혀 있어요.\n5분마다 자동으로 새로 받아 오고, 🔄 새로고침을 누르면 바로 갱신돼요.");
+      alert("지금은 실시간 직접 연결이 안 돼요.\n저장된 경기 정보를 보여 주고 있고, 🔄 새로고침을 누르면 다시 시도해요.");
       return;
     }
     state.liveMode = !state.liveMode;
