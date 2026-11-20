@@ -411,6 +411,40 @@ KLEAGUE = "https://www.kleague.com"
 KBL_API = "https://api.kbl.or.kr"
 KOVO_API = "https://user-api.kovo.co.kr"
 KBO_RANK = "https://www.koreabaseball.com/Record/TeamRank/TeamRankDaily.aspx"
+
+# ══ 국내 팀 로고 — 앱과 같은 곳(sports/assets/logos/)에 내려둔 파일 ══════════
+# 외부 CDN 핫링크가 느리거나 막혀도 깨지지 않게 로컬 SVG·PNG 를 상대경로로 연결한다.
+LOGO_BASE = "./assets/logos"
+KBO_LOGO = {   # KBO 구단 약칭 → 엠블럼 (koreabaseball.com 공식)
+    "KIA": "kbo-HT.png", "KT": "kbo-KT.png", "LG": "kbo-LG.png", "롯데": "kbo-LT.png",
+    "NC": "kbo-NC.png", "삼성": "kbo-SS.png", "키움": "kbo-WO.png", "SSG": "kbo-SK.png",
+    "한화": "kbo-HH.png", "두산": "kbo-OB.png",
+}
+
+
+def kbo_logo(name: str) -> str:
+    f = KBO_LOGO.get((name or "").strip())
+    return f"{LOGO_BASE}/{f}" if f else ""
+
+
+def kbl_logo(logo_class: str) -> str:
+    """KBL 경기·순위의 teamLogoClass(kgc, kcc …) → 로컬 엠블럼"""
+    c = (logo_class or "").strip()
+    return f"{LOGO_BASE}/kbl-{c}.svg" if c and c != "kbl" else ""
+
+
+def kleague_logo(team_id: str) -> str:
+    """kleague.com 구단 코드(K01 …) → 로컬 엠블럼"""
+    t = (team_id or "").strip().upper()
+    return f"{LOGO_BASE}/kleague-{t}.png" if t.startswith("K") else ""
+
+
+def kovo_logo(url: str) -> str:
+    """cdn.kovo.co.kr/emblems/xxx.svg → 로컬 ./assets/logos/kovo-xxx.svg"""
+    base = os.path.basename(str(url or "").split("?")[0])
+    return f"{LOGO_BASE}/kovo-{base}" if base else ""
+
+
 KR_HEADERS = {
     "User-Agent": UA,
     "Accept": "application/json, text/plain, */*",
@@ -500,6 +534,7 @@ def kleague_games(now: datetime) -> list[dict]:
                     (m.get("homeTeamName") or "").strip(), hscore,
                     (m.get("awayTeamName") or "").strip(), ascore,
                     (m.get("fieldName") or "").strip(),
+                    kleague_logo(m.get("homeTeam")), kleague_logo(m.get("awayTeam")),
                 ))
     return out
 
@@ -514,7 +549,7 @@ def kleague_standings() -> list[dict]:
             rows.append({
                 "rank": int(r.get("rank") or len(rows) + 1),
                 "team": (r.get("teamName") or "").strip(),
-                "emblem": "",
+                "emblem": kleague_logo(r.get("teamId")),
                 "games": r.get("gameCount"),
                 "w": r.get("winCnt"), "d": r.get("tieCnt"), "l": r.get("lossCnt"),
                 "rate": None, "points": r.get("gainPoint"), "last5": "", "group": "",
@@ -545,7 +580,7 @@ def kbo_standings() -> list[dict]:
             continue
         rate = (w / (w + l)) if (w + l) else 0.0
         rows.append({
-            "rank": 0, "team": cells[1], "emblem": "", "games": games, "w": w, "d": d, "l": l,
+            "rank": 0, "team": cells[1], "emblem": kbo_logo(cells[1]), "games": games, "w": w, "d": d, "l": l,
             "rate": f"{rate:.3f}", "points": None, "last5": "", "group": "",
         })
     if not rows:
@@ -581,6 +616,7 @@ def kbl_games(now: datetime) -> list[dict]:
             f"kbl-{m.get('gmkey')}", "농구", "kbl", "KBL", date, time_text, state, status,
             (m.get("tnameH") or "").strip(), hscore, (m.get("tnameA") or "").strip(), ascore,
             (m.get("stadiumname") or m.get("place") or "").strip() if isinstance(m.get("stadiumname"), str) else "",
+            kbl_logo(m.get("logoH")), kbl_logo(m.get("logoA")),
         ))
     return out
 
@@ -594,7 +630,7 @@ def kbl_standings() -> list[dict]:
         rows.append({
             "rank": int(r.get("rank") or len(rows) + 1),
             "team": (r.get("tname") or r.get("tnameF") or "").strip(),
-            "emblem": "", "games": win + loss, "w": win, "d": int(r.get("draw") or 0), "l": loss,
+            "emblem": kbl_logo(r.get("teamLogoClass")), "games": win + loss, "w": win, "d": int(r.get("draw") or 0), "l": loss,
             "rate": f"{rate:.3f}", "points": None, "last5": "", "group": "",
         })
     if not rows:
@@ -640,7 +676,7 @@ def kovo_games(now: datetime) -> list[dict]:
             date, time_text, state, status,
             V_TEAMS_KO.get(str(m.get("hcode") or ""), (m.get("hname") or "").strip()), hscore,
             V_TEAMS_KO.get(str(m.get("acode") or ""), (m.get("aname") or "").strip()), ascore,
-            (m.get("place") or "").strip(), m.get("homeEmblemUrl") or "", m.get("awayEmblemUrl") or "",
+            (m.get("place") or "").strip(), kovo_logo(m.get("homeEmblemUrl")), kovo_logo(m.get("awayEmblemUrl")),
         ))
     return out
 
@@ -655,7 +691,7 @@ def kovo_standings() -> list[dict]:
         rows.append({
             "rank": int(r.get("rank") or len(rows) + 1),
             "team": V_TEAMS_KO.get(str(r.get("tcode") or ""), str(r.get("tsname") or "").strip()),
-            "emblem": r.get("emblemUrl") or "", "games": win + loss, "w": win, "d": 0, "l": loss,
+            "emblem": kovo_logo(r.get("emblemUrl")), "games": win + loss, "w": win, "d": 0, "l": loss,
             "rate": f"{rate:.3f}", "points": None, "last5": "", "group": "",
         })
     if not rows:
