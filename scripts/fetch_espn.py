@@ -35,20 +35,32 @@ SITE = "https://site.api.espn.com/apis/site/v2/sports"
 CORE = "https://site.api.espn.com/apis/v2/sports"
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36"
 
-SPORT_ORDER = ["야구", "해외야구", "축구", "해외축구", "농구", "배구", "골프", "일반"]
-SPORT_EMOJI = {"야구": "⚾", "해외야구": "⚾", "축구": "⚽", "해외축구": "⚽",
-               "농구": "🏀", "배구": "🏐", "골프": "⛳", "일반": "🏅"}
+SPORT_ORDER = ["야구", "해외야구", "축구", "해외축구", "국제 대회", "농구", "미식축구", "배구", "일반"]
+SPORT_EMOJI = {"야구": "⚾", "해외야구": "⚾", "축구": "⚽", "해외축구": "⚽", "국제 대회": "🌍",
+               "농구": "🏀", "미식축구": "🏈", "배구": "🏐", "일반": "🏅"}
 
 LEAGUES = [
     {"espn": "baseball/mlb", "sport": "야구", "name": "MLB", "season": "2026"},
     {"espn": "basketball/nba", "sport": "농구", "name": "NBA", "season": "2026"},
+    {"espn": "football/nfl", "sport": "미식축구", "name": "NFL", "season": "2026"},
     {"espn": "soccer/eng.1", "sport": "해외축구", "name": "프리미어리그", "season": "2026"},
     {"espn": "soccer/esp.1", "sport": "해외축구", "name": "라리가", "season": "2026"},
     {"espn": "soccer/ger.1", "sport": "해외축구", "name": "분데스리가", "season": "2026"},
     {"espn": "soccer/ita.1", "sport": "해외축구", "name": "세리에A", "season": "2026"},
+    {"espn": "soccer/tur.1", "sport": "해외축구", "name": "튀르키예 쉬페르리그", "season": "2026"},
     {"espn": "soccer/uefa.champions", "sport": "해외축구", "name": "챔피언스리그", "season": "2026"},
-    {"espn": "golf/pga", "sport": "골프", "name": "PGA", "season": "2026"},
+    # ── 국제 대회 (나라 대 나라) ──
+    # ESPN에서 soccer/afc.cup 은 'AFC 챔피언스리그2'(클럽 대회)라서, 아시안컵은 afc.asian.cup 을 쓴다.
+    {"espn": "soccer/fifa.world", "sport": "국제 대회", "name": "월드컵", "season": "2026", "intl": True},
+    {"espn": "soccer/fifa.worldq.afc", "sport": "국제 대회", "name": "월드컵 아시아 예선", "season": "2026", "intl": True},
+    {"espn": "soccer/afc.asian.cup", "sport": "국제 대회", "name": "아시안컵", "season": "2026", "intl": True},
+    {"espn": "soccer/uefa.nations", "sport": "국제 대회", "name": "네이션스리그", "season": "2026", "intl": True},
+    {"espn": "soccer/uefa.euro", "sport": "국제 대회", "name": "유로", "season": "2026", "intl": True},
+    {"espn": "soccer/caf.nations", "sport": "국제 대회", "name": "아프리카 네이션스컵", "season": "2026", "intl": True},
+    {"espn": "soccer/conmebol.america", "sport": "국제 대회", "name": "코파 아메리카", "season": "2026", "intl": True},
+    {"espn": "soccer/fifa.friendly", "sport": "국제 대회", "name": "국가대표 평가전", "season": "2026", "intl": True},
 ]
+INTL_KEYS = {l["espn"] for l in LEAGUES if l.get("intl")}
 
 TEAMS_KO = {
     # NBA
@@ -91,12 +103,67 @@ TEAMS_KO = {
     "BMG": "묀헨글라트바흐", "SCF": "프라이부르크", "M05": "마인츠",
 }
 
+# NFL 32팀 — 약어가 NBA·MLB와 겹쳐서(CHI·DEN·LAC·SF) 리그별 사전으로 따로 쓴다
+NFL_TEAMS_KO = {
+    "BUF": "버팔로", "MIA": "마이애미", "NE": "뉴잉글랜드", "NYJ": "뉴욕제츠",
+    "BAL": "볼티모어", "CIN": "신시내티", "CLE": "클리블랜드", "PIT": "피츠버그",
+    "HOU": "휴스턴", "IND": "인디애나폴리스", "JAX": "잭슨빌", "TEN": "테네시",
+    "DEN": "덴버", "KC": "캔자스시티", "LV": "라스베이거스", "LAC": "LA차저스",
+    "DAL": "댈러스", "NYG": "뉴욕자이언츠", "PHI": "필라델피아", "WAS": "워싱턴",
+    "CHI": "시카고", "DET": "디트로이트", "GB": "그린베이", "MIN": "미네소타",
+    "ATL": "애틀랜타", "CAR": "캐롤라이나", "NO": "뉴올리언스", "TB": "탬파베이",
+    "ARI": "애리조나", "LAR": "LA램스", "SF": "샌프란시스코", "SEA": "시애틀",
+}
+
+# 튀르키예 쉬페르리그 18팀 (GEN은 세리에A 제노아와 겹침)
+TUR_TEAMS_KO = {
+    "GAL": "갈라타사라이", "FEN": "페네르바체", "BES": "베식타스", "TRAB": "트라브존스포르",
+    "IBFK": "바샥셰히르", "KAS": "카슴파샤", "KOC": "코자엘리스포르", "AMED": "아메드스포르",
+    "COR": "초룸", "GOZ": "괴즈테페", "CAY": "차이쿠르리제스포르", "ERZ": "에르주룸",
+    "ALA": "알라냐스포르", "GEN": "겐츨레르비를리이", "KNY": "코니아스포르", "GAZ": "가즈안테프",
+    "SAM": "삼순스포르", "EYU": "아이윕스포르",
+}
+
+# 국가대표 — CHI(칠레)·DEN(덴마크)·COL(콜롬비아)처럼 클럽 약어와 겹치는 게 많아 리그별 사전으로 쓴다
+INT_TEAMS_KO = {
+    "KOR": "대한민국", "PRK": "북한", "JPN": "일본", "CHN": "중국", "AUS": "호주",
+    "IRN": "이란", "IRQ": "이라크", "KSA": "사우디아라비아", "QAT": "카타르", "UAE": "아랍에미리트",
+    "UZB": "우즈베키스탄", "JOR": "요르단", "SYR": "시리아", "LIB": "레바논", "KUW": "쿠웨이트",
+    "BHR": "바레인", "PLE": "팔레스타인", "YEM": "예멘", "OMA": "오만", "THA": "태국",
+    "VIE": "베트남", "IDN": "인도네시아", "MAS": "말레이시아", "SIN": "싱가포르", "IND": "인도",
+    "KGZ": "키르기스스탄", "KAZ": "카자흐스탄", "TAJ": "타지키스탄", "TKM": "투르크메니스탄", "HKG": "홍콩",
+    "BRA": "브라질", "ARG": "아르헨티나", "URU": "우루과이", "COL": "콜롬비아", "ECU": "에콰도르",
+    "PER": "페루", "CHI": "칠레", "PAR": "파라과이", "BOL": "볼리비아", "VEN": "베네수엘라",
+    "MEX": "멕시코", "USA": "미국", "CAN": "캐나다", "CRC": "코스타리카", "HON": "온두라스",
+    "PAN": "파나마", "JAM": "자메이카", "DOM": "도미니카공화국", "HAI": "아이티", "SLV": "엘살바도르",
+    "GER": "독일", "FRA": "프랑스", "ESP": "스페인", "ENG": "잉글랜드", "ITA": "이탈리아",
+    "POR": "포르투갈", "NED": "네덜란드", "BEL": "벨기에", "CRO": "크로아티아", "SUI": "스위스",
+    "DEN": "덴마크", "SWE": "스웨덴", "NOR": "노르웨이", "FIN": "핀란드", "ISL": "아이슬란드",
+    "POL": "폴란드", "CZE": "체코", "SVK": "슬로바키아", "SVN": "슬로베니아", "HUN": "헝가리",
+    "AUT": "오스트리아", "GRE": "그리스", "TUR": "튀르키예", "SRB": "세르비아", "ROU": "루마니아",
+    "BUL": "불가리아", "UKR": "우크라이나", "RUS": "러시아", "SCO": "스코틀랜드", "WAL": "웨일스",
+    "NIR": "북아일랜드", "IRL": "아일랜드", "ALB": "알바니아", "MKD": "북마케도니아", "BIH": "보스니아",
+    "GEO": "조지아", "ISR": "이스라엘", "AZE": "아제르바이잔", "ARM": "아르메니아", "EST": "에스토니아",
+    "LVA": "라트비아", "LTU": "리투아니아", "BLR": "벨라루스", "MDA": "몰도바", "LUX": "룩셈부르크",
+    "AND": "안도라", "GIB": "지브롤터", "LIE": "리히텐슈타인", "MLT": "몰타", "FRO": "페로제도",
+    "KOS": "코소보", "CYP": "키프로스", "MNE": "몬테네그로",
+    "MAR": "모로코", "SEN": "세네갈", "NGA": "나이지리아", "EGY": "이집트", "ALG": "알제리",
+    "TUN": "튀니지", "CMR": "카메룬", "GHA": "가나", "CIV": "코트디부아르", "MLI": "말리",
+    "BFA": "부르키나파소", "RSA": "남아프리카공화국", "COD": "콩고민주공화국", "ZAM": "잠비아", "ANG": "앙골라",
+    "ETH": "에티오피아", "KEN": "케냐", "UGA": "우간다", "TAN": "탄자니아", "MOZ": "모잠비크",
+    "GAB": "가봉", "GUI": "기니", "GAM": "감비아", "BEN": "베냉", "TOG": "토고",
+    "NIG": "니제르", "CPV": "카보베르데", "EQG": "적도기니", "SUD": "수단", "LBY": "리비아",
+    "NZL": "뉴질랜드", "TAH": "타히티", "FIJ": "피지", "SOL": "솔로몬제도", "VAN": "바누아투",
+    "COK": "쿡제도", "PNG": "파푸아뉴기니", "NCL": "뉴칼레도니아",
+}
+
 STATE_KO = {"pre": "예정", "in": "진행 중", "post": "종료"}
 GROUP_KO = {
     "American League": "아메리칸리그", "National League": "내셔널리그",
     "Eastern Conference": "동부", "Western Conference": "서부",
     "Eastern": "동부", "Western": "서부",
     "AFC": "AFC", "NFC": "NFC",
+    "American Football Conference": "AFC", "National Football Conference": "NFC",
 }
 DIRTY: set[str] = set()
 
@@ -111,7 +178,7 @@ BANNED = [
 ]
 
 
-def budget_ok(start, limit=280):
+def budget_ok(start, limit=420):
     return (time.time() - start) < limit
 
 
@@ -157,7 +224,11 @@ KO_BY_LEAGUE = {
                      "FIO": "피오렌티나", "BOL": "볼로냐", "UDI": "우디네세", "GEN": "제노아"},
     "soccer/uefa.champions": {"MIL": "AC밀란", "TOR": "토리노", "ROM": "로마", "INT": "인터밀란",
                               "JUV": "유벤투스", "NAP": "나폴리", "LAZ": "라치오", "ATA": "아탈란타"},
+    "football/nfl": NFL_TEAMS_KO,
+    "soccer/tur.1": TUR_TEAMS_KO,
 }
+for _intl in INTL_KEYS:
+    KO_BY_LEAGUE[_intl] = INT_TEAMS_KO
 
 
 def team_ko(team: dict, league_key: str = "") -> str:
@@ -203,12 +274,20 @@ def status_ko(comp: dict, sport: str) -> tuple[str, str]:
         label = f"{period}쿼터" if period else "진행 중"
     elif sport == "야구":
         label = f"{period}회" if period else "진행 중"
-    elif sport in ("해외축구", "축구"):
+    elif sport in ("해외축구", "축구", "국제 대회"):
         label = "후반" if period >= 2 else "전반"
         if clock:
             label += f" {clock}"
-    elif sport == "골프":
-        label = f"{period}라운드" if period else "진행 중"
+    elif sport == "미식축구":
+        words = f"{stype.get('description') or ''} {detail}".lower()
+        if "half" in words:
+            label = "하프타임"
+        elif period and period > 4:
+            label = "연장"
+        elif period:
+            label = f"{period}쿼터" + (f" {clock}" if clock else "")
+        else:
+            label = "진행 중"
     else:
         label = "진행 중"
     return "live", label
@@ -286,12 +365,15 @@ def fetch_scoreboard(league: dict, date_str: str) -> list[dict]:
 
 def build_today(now: datetime) -> None:
     games, seen = [], set()
-    for offset in (0, -1):
+    # 0=오늘, -1=어제(끝난 경기), 1=내일(이따 있을 경기) — 금요일 밤에 주말 경기를 미리 보여 준다
+    for offset in (0, -1, 1):
         date_str = (now + timedelta(days=offset)).strftime("%Y%m%d")
         for league in LEAGUES:
             try:
                 for game in fetch_scoreboard(league, date_str):
                     if offset == -1 and game["state"] != "done":
+                        continue
+                    if offset == 1 and game["state"] != "upcoming":
                         continue
                     key = game["id"] or f"{game['home']['name']}-{game['away']['name']}"
                     if key in seen:
@@ -299,6 +381,8 @@ def build_today(now: datetime) -> None:
                     seen.add(key)
                     if offset == -1:
                         game["yesterday"] = True
+                    elif offset == 1:
+                        game["tomorrow"] = True
                     games.append(game)
             except Exception as exc:  # noqa: BLE001
                 print(f"  {league['name']} {date_str} 실패: {exc}", flush=True)
@@ -333,7 +417,8 @@ def stat_value(entry: dict, *names):
 def build_standings(now: datetime) -> None:
     leagues = []
     for league in LEAGUES:
-        if league["espn"].startswith("golf"):
+        if league.get("intl"):
+            # 국제 대회는 조별리그 표가 대회마다 달라서 순위는 넣지 않는다(경기·소식만)
             continue
         url = f"{CORE}/{league['espn']}/standings?season={league['season']}"
         try:
@@ -353,14 +438,23 @@ def build_standings(now: datetime) -> None:
                     rank = len(rows) + 1
                 points = stat_value(entry, "points")
                 win_pct = stat_value(entry, "winPercent") or stat_value(entry, "percentage")
+                wins = stat_value(entry, "wins")
+                draws = stat_value(entry, "ties")
+                losses = stat_value(entry, "losses")
+                played = stat_value(entry, "gamesPlayed")
+                if played in (None, ""):
+                    try:
+                        played = str(int(float(str(wins or 0))) + int(float(str(draws or 0))) + int(float(str(losses or 0))))
+                    except Exception:  # noqa: BLE001
+                        played = None
                 rows.append({
                     "rank": int(float(rank)) if str(rank).replace(".", "").isdigit() else len(rows) + 1,
                     "team": team_ko(team, league["espn"]),
                     "emblem": logo_of(team),
-                    "games": stat_value(entry, "gamesPlayed"),
-                    "w": stat_value(entry, "wins"),
-                    "d": stat_value(entry, "ties"),
-                    "l": stat_value(entry, "losses"),
+                    "games": played,
+                    "w": wins,
+                    "d": draws,
+                    "l": losses,
                     "rate": win_pct,
                     "points": points if points not in ("", None) else None,
                     "last5": "",
@@ -434,7 +528,7 @@ def translate(text: str) -> str:
     try:
         payload = get_json(url)
         out = ((payload.get("responseData") or {}).get("translatedText")) or ""
-        if out and payload.get("responseStatus") == 200:
+        if out and payload.get("responseStatus") == 200 and "MYMEMORY WARNING" not in out.upper():
             return html.unescape(out)
     except Exception as exc:  # noqa: BLE001
         print(f"    번역 실패: {exc}", flush=True)
@@ -493,7 +587,8 @@ def build_news(now: datetime) -> None:
             if len(items) >= 3:
                 break
         if items:
-            sections.append({"id": league["espn"], "label": league["name"], "items": items})
+            sections.append({"id": league["espn"], "label": league["name"],
+                             "sport": league["sport"], "intl": bool(league.get("intl")), "items": items})
             total += len(items)
             print(f"  {league['name']}: {len(items)}건", flush=True)
 
@@ -512,6 +607,25 @@ def build_news(now: datetime) -> None:
     })
 
 
+def write_ko_maps() -> None:
+    """앱이 ESPN을 직접 부를 때 쓰는 리그별 한국어 이름표.
+
+    약어가 리그끼리 겹쳐서(CHI=시카고/칠레, GEN=제노아/겐츨레르비를리이) 한 장으로는
+    맞출 수 없다. 수집기가 원본을 쥐고 이 파일로 내려 준다.
+    """
+    write_json("ko-teams.json", {
+        "updated": datetime.now(KST).isoformat(timespec="seconds"),
+        "byLeague": {
+            "football/nfl": NFL_TEAMS_KO,
+            "soccer/tur.1": TUR_TEAMS_KO,
+            "soccer/ita.1": KO_BY_LEAGUE["soccer/ita.1"],
+            "soccer/uefa.champions": KO_BY_LEAGUE["soccer/uefa.champions"],
+        },
+        "intl": INT_TEAMS_KO,
+        "intlLeagues": sorted(INTL_KEYS),
+    })
+
+
 START = time.time()
 
 
@@ -526,6 +640,7 @@ def main() -> int:
     for k, v in cached.items():
         TEAMS_KO.setdefault(k, v)
     write_json("teams-ko.json", dict(sorted(TEAMS_KO.items())))
+    write_ko_maps()
     for name, fn in (("today", build_today), ("standings", build_standings), ("news", build_news)):
         try:
             fn(now)
