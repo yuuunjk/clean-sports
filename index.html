@@ -261,6 +261,10 @@
 
 <script>
 "use strict";
+/* 화면에 보이지 않는 진단용 기록 — 오류 0건 확인에 쓴다 */
+window.__errs = [];
+addEventListener("error", (e) => window.__errs.push(String(e.message || e.error)));
+addEventListener("unhandledrejection", (e) => window.__errs.push("rejection: " + String(e.reason)));
 const $ = (sel, root = document) => root.querySelector(sel);
 const WEEK = ["일","월","화","수","목","금","토"];
 const SPORT_EMOJI = {야구:"⚾", 해외야구:"⚾", 축구:"⚽", 해외축구:"⚽", 농구:"🏀", 배구:"🏐", 골프:"⛳", 일반:"🏅"};
@@ -654,6 +658,13 @@ function renderAll(){
   renderNewsChips(); renderNews();
   renderSettings();
   $("#todayLabel").textContent = fmtToday();
+  window.__diag = {
+    games: state.today?.total ?? 0,
+    leagues: state.standings?.leagues?.length ?? 0,
+    news: state.news?.total ?? 0,
+    updated: state.today?.updated || "",
+    errs: window.__errs.length,
+  };
 }
 let dataTimer = null, liveTimer = null;
 function setupTimer(){
