@@ -10,6 +10,10 @@
   * 기사 본문은 요약을 만든 뒤 저장하지 않는다 (전문·댓글·광고 저장 금지)
   * 어린이에게 부적절한 기사는 제목 단계에서 버린다
   * 외부 AI API 없이 규칙만으로 요약한다 (비용 0원)
+
+실행 예산
+  * 요청 하나는 8초 안에 끝나야 하고, 전체는 TIME_BUDGET 안에서 끝난다.
+  * 시간이 모자라면 뒤 단계는 건너뛰고, 끝난 것만 저장한다(기존 파일은 보존).
 """
 from __future__ import annotations
 
@@ -34,6 +38,16 @@ UA = (
     "(KHTML, like Gecko) Chrome/131.0 Safari/537.36"
 )
 
+REQUEST_TIMEOUT = 8
+TIME_BUDGET = 280  # 초. 워크플로가 8분에 잘리므로 여유를 두고 스스로 멈춘다.
+START = time.time()
+DIAG = {"requests": 0, "errors": [], "steps": []}
+
+
+def budget_left() -> float:
+    return TIME_BUDGET - (time.time() - START)
+
+
 GAMES_FIELDS = ",".join(
     [
         "basic",
@@ -53,12 +67,15 @@ GAMES_FIELDS = ",".join(
     ]
 )
 
+
 # ---------------------------------------------------------------- HTTP
 
 
-def http_get(url: str, timeout: int = 20, retries: int = 2) -> bytes:
+def http_get(url: str, timeout: int = REQUEST_TIMEOUT, retries: int = 1) -> bytes:
     last = None
     for attempt in range(retries + 1):
+        if budget_left() < timeout + 2:
+            raise TimeoutError("시간 예산 초과")
         try:
             req = urllib.request.Request(
                 url,
@@ -69,18 +86,18 @@ def http_get(url: str, timeout: int = 20, retries: int = 2) -> bytes:
                     "Referer": "https://sports.naver.com/",
                 },
             )
+            DIAG["requests"] += 1
             with urllib.request.urlopen(req, timeout=timeout) as res:
                 return res.read()
         except Exception as exc:  # noqa: BLE001 - 네트워크는 어떤 이유로도 실패할 수 있다
             last = exc
             if attempt < retries:
-                time.sleep(1.5 * (attempt + 1))
-    raise RuntimeError(f"GET 실패 {url}: {last}")
+                time.sleep(1.0)
+    raise RuntimeError(f"{type(last).__name__}: {last} @ {url[:90]}")
 
 
 def get_json(url: str) -> dict:
-    raw = http_get(url)
-    return json.loads(raw.decode("utf-8", "replace"))
+    return json.loads(http_get(url).decode("utf-8", "replace"))
 
 
 def get_text(url: str) -> str:
@@ -93,7 +110,7 @@ def write_json(name: str, obj) -> None:
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(obj, fh, ensure_ascii=False, separators=(",", ":"))
         fh.write("\n")
-    print(f"  → {name} ({os.path.getsize(path) / 1024:.1f} KB)")
+    print(f"  → {name} ({os.path.getsize(path) / 1024:.1f} KB)", flush=True)
 
 
 def read_json(name: str, default=None):
@@ -107,7 +124,6 @@ def read_json(name: str, default=None):
 
 # ---------------------------------------------------------------- 종목 분류
 
-# 앱의 종목 필터 칩: 전체 · 야구 · 해외야구 · 축구 · 해외축구 · 농구 · 배구 · 골프 · 일반
 FOREIGN_FOOTBALL = {
     "epl", "laliga", "bundesliga", "seriea", "ligue1", "spl", "eredivisie",
     "mls", "jleague", "saudiarabia", "facup", "ucl", "uel", "uecl",
@@ -132,42 +148,22 @@ SPORT_BY_UPPER = {
 
 SPORT_ORDER = ["야구", "해외야구", "축구", "해외축구", "농구", "배구", "골프", "일반"]
 
+SPORT_EMOJI = {
+    "야구": "⚾", "해외야구": "⚾", "축구": "⚽", "해외축구": "⚽",
+    "농구": "🏀", "배구": "🏐", "골프": "⛳", "일반": "🏅",
+}
+
 LEAGUE_NAMES = {
-    "kbo": "KBO리그",
-    "kbaseballetc": "국내야구",
-    "mlb": "MLB",
-    "npb": "일본프로야구",
-    "wbaseballetc": "해외야구",
-    "kleague": "K리그1",
-    "kleague2": "K리그2",
-    "wkleague": "WK리그",
-    "kfootballetc": "국내축구",
-    "epl": "프리미어리그",
-    "laliga": "라리가",
-    "bundesliga": "분데스리가",
-    "seriea": "세리에A",
-    "ligue1": "리그1",
-    "mls": "MLS",
-    "jleague": "J1리그",
-    "ucl": "챔피언스리그",
-    "u17worldcup": "U-17 월드컵",
-    "kbl": "KBL",
-    "wkbl": "WKBL",
-    "nba": "NBA",
-    "basketballetc": "농구",
-    "kovo": "V리그 남자부",
-    "wkovo": "V리그 여자부",
-    "volleyballetc": "배구",
-    "uvolleyball": "대학배구",
-    "kpga": "KPGA",
-    "klpga": "KLPGA",
-    "pga": "PGA",
-    "lpga": "LPGA",
-    "wta": "WTA 테니스",
-    "atp": "ATP 테니스",
-    "wbadminton": "배드민턴",
-    "baduk": "바둑",
-    "etc": "일반",
+    "kbo": "KBO리그", "kbaseballetc": "국내야구", "mlb": "MLB", "npb": "일본프로야구",
+    "wbaseballetc": "해외야구", "kleague": "K리그1", "kleague2": "K리그2",
+    "wkleague": "WK리그", "kfootballetc": "국내축구", "epl": "프리미어리그",
+    "laliga": "라리가", "bundesliga": "분데스리가", "seriea": "세리에A",
+    "ligue1": "리그1", "mls": "MLS", "jleague": "J1리그", "ucl": "챔피언스리그",
+    "u17worldcup": "U-17 월드컵", "kbl": "KBL", "wkbl": "WKBL", "nba": "NBA",
+    "basketballetc": "농구", "kovo": "V리그 남자부", "wkovo": "V리그 여자부",
+    "volleyballetc": "배구", "uvolleyball": "대학배구", "kpga": "KPGA",
+    "klpga": "KLPGA", "pga": "PGA", "lpga": "LPGA", "wta": "WTA 테니스",
+    "atp": "ATP 테니스", "wbadminton": "배드민턴", "baduk": "바둑", "etc": "일반",
 }
 
 # 경기 카드로 만들지 않는 '방송·이벤트' 항목 (아이 화면을 깔끔하게)
@@ -175,15 +171,12 @@ JUNK_TITLE = re.compile(
     r"(라이브|오프너|티켓|중계|토크|특집|예고|하이라이트|다시보기|풀영상|"
     r"초대석|유튜브|쇼츠|LIVE|TV\b)"
 )
-JUNK_TEXT = re.compile(r"(라이브|오프너|티켓|중대공지)")
 
 
 def sport_of(game: dict) -> str:
     cid = (game.get("categoryId") or "").lower()
     upper = (game.get("upperCategoryId") or "").lower()
     if cid in FOREIGN_FOOTBALL:
-        return "해외축구"
-    if upper == "kfootball" and cid in FOREIGN_FOOTBALL:
         return "해외축구"
     return SPORT_BY_UPPER.get(upper, "일반")
 
@@ -205,17 +198,14 @@ TIME_RE = re.compile(r"T(\d{2}):(\d{2})")
 
 
 def game_time(game: dict) -> str:
-    dt = game.get("gameDateTime") or ""
-    m = TIME_RE.search(dt)
+    m = TIME_RE.search(game.get("gameDateTime") or "")
     return f"{m.group(1)}:{m.group(2)}" if m else ""
 
 
 def to_state(game: dict) -> str:
+    if game.get("cancel") or game.get("suspended"):
+        return "cancel"
     num = game.get("statusNum")
-    if game.get("cancel"):
-        return "cancel"
-    if game.get("suspended"):
-        return "cancel"
     if num == 2:
         return "live"
     if num == 4:
@@ -223,22 +213,9 @@ def to_state(game: dict) -> str:
     return "upcoming"
 
 
-SPORT_EMOJI = {
-    "야구": "⚾",
-    "해외야구": "⚾",
-    "축구": "⚽",
-    "해외축구": "⚽",
-    "농구": "🏀",
-    "배구": "🏐",
-    "골프": "⛳",
-    "일반": "🏅",
-}
-
-
 def compact_game(game: dict, date_str: str) -> dict:
     sport = sport_of(game)
     cid = game.get("categoryId") or ""
-    state = to_state(game)
     home = {
         "name": (game.get("homeTeamName") or "").strip(),
         "code": game.get("homeTeamCode") or "",
@@ -253,12 +230,9 @@ def compact_game(game: dict, date_str: str) -> dict:
     }
     title = (game.get("title") or "").strip()
     if not home["name"] and not away["name"]:
-        # 테니스·바둑처럼 '제목'으로만 표시되는 경기
-        label = title or (game.get("categoryName") or "")
-        home["name"] = label
-        away["name"] = ""
+        home["name"] = title or (game.get("categoryName") or "")
     status_info = (game.get("statusInfo") or "").strip()
-    if state == "done" and status_info in ("", "경기종료"):
+    if to_state(game) == "done" and status_info in ("", "경기종료"):
         status_info = ""
     return {
         "id": game.get("gameId") or "",
@@ -270,7 +244,7 @@ def compact_game(game: dict, date_str: str) -> dict:
         or (game.get("categoryName") or ""),
         "time": game_time(game),
         "date": date_str,
-        "state": state,
+        "state": to_state(game),
         "status": status_info,
         "home": home,
         "away": away,
@@ -290,40 +264,35 @@ def fetch_games(date_str: str) -> list[dict]:
     url = f"{API}/schedule/today-games?date={date_str}&fields={GAMES_FIELDS}"
     payload = get_json(url)
     games = ((payload.get("result") or {}).get("games")) or []
-    out = []
-    for game in games:
-        if is_junk(game):
-            continue
-        out.append(compact_game(game, date_str))
+    out = [compact_game(g, date_str) for g in games if not is_junk(g)]
     out.sort(key=sort_key)
     return out
 
 
-def build_today(now: datetime) -> list[dict]:
+def build_today(now: datetime) -> bool:
     today = now.strftime("%Y-%m-%d")
     games = fetch_games(today)
-    print(f"  오늘({today}) 경기 {len(games)}건")
+    print(f"  오늘({today}) 경기 {len(games)}건", flush=True)
 
     done_today = [g for g in games if g["state"] == "done"]
-    if len(done_today) < 4:
-        # 아침에는 오늘 끝난 경기가 거의 없다 → 어제 결과 몇 개를 채워 준다
+    if len(done_today) < 4 and budget_left() > 60:
         yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
         try:
-            old = [
-                g
-                for g in fetch_games(yesterday)
-                if g["state"] == "done"
-            ]
+            old = [g for g in fetch_games(yesterday) if g["state"] == "done"]
             old.sort(key=lambda g: (g["time"], g["sport"]), reverse=True)
             for g in old[:8]:
                 g["yesterday"] = True
             games.extend(old[:8])
-            print(f"  어제({yesterday}) 결과 {min(len(old), 8)}건 보충")
+            print(f"  어제({yesterday}) 결과 {len(old[:8])}건 보충", flush=True)
         except Exception as exc:  # noqa: BLE001
-            print(f"  어제 결과 보충 실패(무시): {exc}")
+            print(f"  어제 결과 보충 실패(무시): {exc}", flush=True)
+
+    if not games:
+        print("  경기가 0건이라 today.json은 그대로 둡니다", flush=True)
+        return False
 
     games.sort(key=sort_key)
-    counts = {}
+    counts: dict[str, int] = {}
     for g in games:
         counts[g["sport"]] = counts.get(g["sport"], 0) + 1
 
@@ -338,27 +307,27 @@ def build_today(now: datetime) -> list[dict]:
             "games": games,
         },
     )
-    return games
+    return True
 
 
 # ---------------------------------------------------------------- 순위
 
 STANDING_LEAGUES = [
     ("kbo", "야구", "KBO리그"),
-    ("mlb", "해외야구", "MLB"),
-    ("npb", "해외야구", "일본프로야구"),
     ("kleague", "축구", "K리그1"),
-    ("kleague2", "축구", "K리그2"),
     ("epl", "해외축구", "프리미어리그"),
-    ("laliga", "해외축구", "라리가"),
-    ("bundesliga", "해외축구", "분데스리가"),
-    ("seriea", "해외축구", "세리에A"),
-    ("mls", "해외축구", "MLS"),
     ("kbl", "농구", "KBL"),
-    ("wkbl", "농구", "WKBL"),
     ("nba", "농구", "NBA"),
     ("kovo", "배구", "V리그 남자부"),
     ("wkovo", "배구", "V리그 여자부"),
+    ("mlb", "해외야구", "MLB"),
+    ("kleague2", "축구", "K리그2"),
+    ("wkbl", "농구", "WKBL"),
+    ("laliga", "해외축구", "라리가"),
+    ("bundesliga", "해외축구", "분데스리가"),
+    ("npb", "해외야구", "일본프로야구"),
+    ("seriea", "해외축구", "세리에A"),
+    ("mls", "해외축구", "MLS"),
 ]
 
 
@@ -374,34 +343,29 @@ def parse_standing_row(row: dict) -> dict | None:
     name = first_not_none(row, "teamName", "teamShortName", "name")
     if rank is None or not name:
         return None
-    wins = first_not_none(row, "wins", "winGameCount", "win")
-    draws = first_not_none(row, "draws", "drawnGameCount", "draw")
-    losses = first_not_none(row, "losses", "loseGameCount", "lose")
-    games = first_not_none(row, "matchesPlayed", "gameCount", "games")
-    rate = first_not_none(row, "wra", "winRate", "winPercentage")
-    points = first_not_none(row, "points", "gainPoint", "seasonPoints")
-    emblem = first_not_none(row, "teamEmblemUrl", "teamImageUrl", "emblem") or ""
     return {
         "rank": rank,
         "team": name,
-        "emblem": emblem,
-        "games": games,
-        "w": wins,
-        "d": draws,
-        "l": losses,
-        "rate": rate,
-        "points": points,
+        "emblem": first_not_none(row, "teamEmblemUrl", "teamImageUrl", "emblem") or "",
+        "games": first_not_none(row, "matchesPlayed", "gameCount", "games"),
+        "w": first_not_none(row, "wins", "winGameCount", "win"),
+        "d": first_not_none(row, "draws", "drawnGameCount", "draw"),
+        "l": first_not_none(row, "losses", "loseGameCount", "lose"),
+        "rate": first_not_none(row, "wra", "winRate", "winPercentage"),
+        "points": first_not_none(row, "points", "gainPoint", "seasonPoints"),
         "last5": first_not_none(row, "lastFiveGames", "recentFiveGames") or "",
         "group": row.get("group") or "",
     }
 
 
-def build_standings(now: datetime) -> None:
+def build_standings(now: datetime, previous: dict | None) -> bool:
     leagues = []
     years = [now.year, now.year - 1]
     for code, sport, label in STANDING_LEAGUES:
-        rows = []
-        season = None
+        if budget_left() < 25:
+            print("  시간 예산이 부족해 순위 수집을 여기서 멈춥니다", flush=True)
+            break
+        rows, season = [], None
         for year in years:
             url = (
                 f"{API}/statistics/categories/{code}/seasons/{year}/teams"
@@ -410,7 +374,7 @@ def build_standings(now: datetime) -> None:
             try:
                 payload = get_json(url)
             except Exception as exc:  # noqa: BLE001
-                print(f"  {code} {year} 실패: {exc}")
+                print(f"  {code} {year} 실패: {exc}", flush=True)
                 continue
             raw = ((payload.get("result") or {}).get("seasonTeamStats")) or []
             parsed = [r for r in (parse_standing_row(x) for x in raw) if r]
@@ -418,22 +382,21 @@ def build_standings(now: datetime) -> None:
                 rows, season = parsed, str(year)
                 break
         if not rows:
-            print(f"  {code}: 순위 없음(건너뜀)")
+            print(f"  {code}: 순위 없음(건너뜀)", flush=True)
             continue
         rows.sort(key=lambda r: (r["group"] or "", r["rank"]))
         metric = "pts" if all(r["points"] is not None for r in rows[:3]) else "pct"
         leagues.append(
             {
-                "id": code,
-                "sport": sport,
-                "name": label,
-                "season": season,
-                "metric": metric,
-                "teamCount": len(rows),
-                "rows": rows,
+                "id": code, "sport": sport, "name": label, "season": season,
+                "metric": metric, "teamCount": len(rows), "rows": rows,
             }
         )
-        print(f"  {code} {season}: {len(rows)}팀 ({metric})")
+        print(f"  {code} {season}: {len(rows)}팀 ({metric})", flush=True)
+
+    if not leagues:
+        print("  순위가 하나도 없어 standings.json은 그대로 둡니다", flush=True)
+        return False
 
     order = {s: i for i, s in enumerate(SPORT_ORDER)}
     leagues.sort(key=lambda l: (order.get(l["sport"], 9), l["name"]))
@@ -445,6 +408,7 @@ def build_standings(now: datetime) -> None:
             "leagues": leagues,
         },
     )
+    return True
 
 
 # ---------------------------------------------------------------- 뉴스
@@ -463,28 +427,19 @@ SECTIONS = [
 # 아이 화면에 올리지 않는 주제 (사건·사고·연예·정치·도박 등)
 BANNED = [
     "성폭력", "성추행", "성매매", "음란", "AV배우", "성인물", "몰카",
-    "도박", "마약", "대마", "음주운전", "음주", "만취", "폭행", "폭력", "구타",
+    "도박", "마약", "대마", "음주운전", "만취", "폭행", "폭력", "구타",
     "사망", "숨진", "시신", "살해", "살인", "자살", "투신", "자해", "부검", "변사",
     "사고사", "참사", "화재", "붕괴", "실종",
     "구속", "기소", "재판", "법원", "검찰", "경찰", "소송", "고소", "고발", "징역",
     "횡령", "뇌물", "비리", "유착", "탈세", "논란", "막말", "욕설", "갑질",
     "이혼", "불륜", "스캔들", "열애", "결별", "루머", "사생활",
     "정치", "대통령", "국회", "의원", "선거", "장관", "청문회",
-    "별세", "부고", "빈소",
-    "사퇴", "경질", "해체", "파산",
+    "별세", "부고", "빈소", "사퇴", "경질", "해체", "파산",
 ]
 
 SOURCE_BONUS = {
-    "연합뉴스": 3.0,
-    "뉴시스": 2.5,
-    "뉴스1": 2.5,
-    "SBS": 2.0,
-    "KBS": 2.0,
-    "MBC": 2.0,
-    "YTN": 2.0,
-    "MBN": 1.5,
-    "JTBC": 1.5,
-    "OBS": 1.5,
+    "연합뉴스": 3.0, "뉴시스": 2.5, "뉴스1": 2.5, "SBS": 2.0, "KBS": 2.0,
+    "MBC": 2.0, "YTN": 2.0, "MBN": 1.5, "JTBC": 1.5, "OBS": 1.5,
 }
 
 DROP_PAT = [
@@ -512,15 +467,12 @@ def is_safe(text: str) -> bool:
 
 
 def fetch_article_list(section: str, date_str: str) -> list[dict]:
-    base = (
-        f"{API}/news/articles/{section}"
-        f"?sort=latest&page=1&pageSize=30&isPhoto=N"
-    )
+    base = f"{API}/news/articles/{section}?sort=latest&page=1&pageSize=30&isPhoto=N"
     for url in (f"{base}&date={date_str}", base):
         try:
             payload = get_json(url)
         except Exception as exc:  # noqa: BLE001
-            print(f"    {section} 목록 실패: {exc}")
+            print(f"    {section} 목록 실패: {exc}", flush=True)
             continue
         items = ((payload.get("result") or {}).get("newsList")) or []
         if items:
@@ -557,10 +509,6 @@ def clean_lines(text: str) -> list[str]:
             continue
         out.append(line)
     return out
-
-
-OPEN_Q = "“‘\"'「『"
-CLOSE_Q = "”’\"'」』"
 
 
 def split_sentences(lines: list[str]) -> list[str]:
@@ -605,16 +553,14 @@ def split_sentences(lines: list[str]) -> list[str]:
 
 def title_words(title: str) -> set[str]:
     stop = {"그리고", "하지만", "위해", "대한", "있는", "이번", "기자", "오늘", "지난"}
-    return {
-        w for w in re.findall(r"[가-힣A-Za-z0-9]{2,}", title) if w not in stop
-    }
+    return {w for w in re.findall(r"[가-힣A-Za-z0-9]{2,}", title) if w not in stop}
 
 
 def clip(sentence: str, limit: int = 105) -> str:
     if len(sentence) <= limit:
         return sentence
     cut = sentence[:limit]
-    pos = max(cut.rfind(" "), cut.rfind(","), cut.rfind("·"), cut.rfind("다"))
+    pos = max(cut.rfind(" "), cut.rfind(","), cut.rfind("·"))
     if pos < limit * 0.5:
         pos = limit - 1
     return cut[:pos].rstrip(" ,·") + "…"
@@ -633,10 +579,6 @@ def summarize(title: str, lines: list[str], n: int = 3) -> list[str]:
         if len(s) > 200:
             score -= 1.0
         scored.append((score, idx, s))
-    picked = [head]
-    for _, _, s in sorted(scored, reverse=True)[: n - 1]:
-        picked.append(s)
-    # 원문 순서 유지 (head가 항상 첫 문장)
     ordered = [head] + [s for _, _, s in sorted(scored, reverse=True)[: n - 1]]
     out, seen = [], set()
     for s in ordered:
@@ -656,20 +598,22 @@ def fallback_summary(sub_content: str) -> list[str]:
     return [clip(s) for s in sents[:3]]
 
 
-UA_IMG_HOSTS = ("imgnews.pstatic.net",)
-
-
-def build_news(now: datetime, cache: dict) -> None:
+def build_news(now: datetime, cache: dict) -> bool:
     date_str = now.strftime("%Y%m%d")
     sections_out = []
-    used_ids = set()
+    used_ids: set[str] = set()
     total_body = 0
-    new_cache = {}
+    new_cache: dict = {}
+    any_items = False
 
     for section, label in SECTIONS:
+        if budget_left() < 20:
+            print(f"  {label}: 시간 예산 부족으로 건너뜀", flush=True)
+            sections_out.append({"id": section, "label": label, "items": []})
+            continue
         raw = fetch_article_list(section, date_str)
         if not raw:
-            print(f"  {label}({section}): 기사 없음")
+            print(f"  {label}({section}): 기사 없음", flush=True)
             sections_out.append({"id": section, "label": label, "items": []})
             continue
 
@@ -702,94 +646,114 @@ def build_news(now: datetime, cache: dict) -> None:
             if cached and cached.get("summary"):
                 summary = cached["summary"]
             else:
-                if total_body >= 22:
+                if total_body >= 10 or budget_left() < 15:
                     continue
                 link = f"{NEWS_HOST}/article/{item.get('oid')}/{item.get('aid')}"
                 try:
                     page = get_text(link)
                     total_body += 1
                 except Exception as exc:  # noqa: BLE001
-                    print(f"    본문 실패 {uid}: {exc}")
+                    print(f"    본문 실패 {uid}: {exc}", flush=True)
                     page = ""
-                if page:
-                    lines = clean_lines(get_body_html(page))
-                    summary = summarize(title, lines)
-                else:
-                    summary = []
+                summary = summarize(title, clean_lines(get_body_html(page))) if page else []
                 if not summary:
                     summary = fallback_summary(sub)
-                if not summary:
-                    continue
-                if not is_safe(" ".join(summary)):
+                if not summary or not is_safe(" ".join(summary)):
                     continue
             seen_titles.add(key)
             used_ids.add(uid)
-            dt = item.get("dateTime") or ""
             items.append(
                 {
                     "id": uid,
                     "title": title,
                     "summary": summary[:3],
                     "source": source,
-                    "time": dt,
+                    "time": item.get("dateTime") or "",
                     "link": f"{NEWS_HOST}/article/{item.get('oid')}/{item.get('aid')}",
                 }
             )
             new_cache[uid] = {"summary": summary[:3], "title": title}
 
-        print(f"  {label}({section}): 후보 {len(candidates)}건 → {len(items)}건")
+        print(f"  {label}({section}): 후보 {len(candidates)}건 → {len(items)}건", flush=True)
+        any_items = any_items or bool(items)
         sections_out.append({"id": section, "label": label, "items": items})
 
-    # 캐시는 최근 것 위주로 400개까지
-    merged = dict(new_cache)
-    for uid, value in cache.items():
-        if len(merged) >= 400:
-            break
-        merged.setdefault(uid, value)
-    write_json("news_cache.json", merged)
-
-    total = sum(len(s["items"]) for s in sections_out)
-    write_json(
-        "news.json",
-        {
-            "updated": now.isoformat(timespec="seconds"),
-            "total": total,
-            "note": "제목·3줄 요약·원문 링크만 담습니다. 기사 전문과 댓글은 저장하지 않습니다.",
-            "sections": sections_out,
-        },
-    )
+    if any_items:
+        merged = dict(new_cache)
+        for uid, value in cache.items():
+            if len(merged) >= 400:
+                break
+            merged.setdefault(uid, value)
+        write_json("news_cache.json", merged)
+        write_json(
+            "news.json",
+            {
+                "updated": now.isoformat(timespec="seconds"),
+                "total": sum(len(s["items"]) for s in sections_out),
+                "note": "제목·3줄 요약·원문 링크만 담습니다. 기사 전문과 댓글은 저장하지 않습니다.",
+                "sections": sections_out,
+            },
+        )
+        return True
+    print("  기사가 하나도 없어 news.json은 그대로 둡니다", flush=True)
+    return False
 
 
 # ---------------------------------------------------------------- main
 
 
+def preflight() -> None:
+    """api-gw 접근이 되는지부터 5초 안에 확인한다 (로그로 판단할 수 있게)."""
+    url = f"{API}/schedule/today-games?date={datetime.now(KST):%Y-%m-%d}&fields=categoryId"
+    started = time.time()
+    try:
+        raw = http_get(url, timeout=6, retries=0)
+        print(f"  preflight OK ({time.time() - started:.1f}s, {len(raw)} bytes)", flush=True)
+        DIAG["steps"].append({"preflight": "ok", "seconds": round(time.time() - started, 1)})
+    except Exception as exc:  # noqa: BLE001
+        print(f"  preflight FAIL ({time.time() - started:.1f}s): {exc}", flush=True)
+        DIAG["steps"].append({"preflight": "fail", "error": str(exc)[:200]})
+
+
 def main() -> int:
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:  # noqa: BLE001
+        pass
     now = datetime.now(KST)
-    print(f"[{now.isoformat(timespec='seconds')}] 네이버 스포츠 수집 시작")
+    print(f"[{now.isoformat(timespec='seconds')}] 네이버 스포츠 수집 시작 (예산 {TIME_BUDGET}s)", flush=True)
 
-    failures = []
-    try:
-        build_today(now)
-    except Exception as exc:  # noqa: BLE001
-        failures.append(f"today: {exc}")
-        print(f"!! today 실패: {exc}")
+    preflight()
 
-    try:
-        build_standings(now)
-    except Exception as exc:  # noqa: BLE001
-        failures.append(f"standings: {exc}")
-        print(f"!! standings 실패: {exc}")
+    steps = [
+        ("today", lambda: build_today(now)),
+        ("standings", lambda: build_standings(now, read_json("standings.json"))),
+        ("news", lambda: build_news(now, read_json("news_cache.json", {}) or {})),
+    ]
+    for name, fn in steps:
+        if budget_left() < 20:
+            print(f"!! {name} 건너뜀(시간 예산)", flush=True)
+            DIAG["steps"].append({name: "skipped"})
+            continue
+        try:
+            ok = fn()
+            DIAG["steps"].append({name: "ok" if ok else "empty"})
+        except Exception as exc:  # noqa: BLE001
+            DIAG["errors"].append(f"{name}: {exc}"[:300])
+            DIAG["steps"].append({name: "fail", "error": str(exc)[:200]})
+            print(f"!! {name} 실패: {exc}", flush=True)
 
-    try:
-        cache = read_json("news_cache.json", {}) or {}
-        build_news(now, cache)
-    except Exception as exc:  # noqa: BLE001
-        failures.append(f"news: {exc}")
-        print(f"!! news 실패: {exc}")
-
-    if failures:
-        print("실패 요약: " + " | ".join(failures))
-    print("수집 끝")
+    write_json(
+        "_diag.json",
+        {
+            "updated": now.isoformat(timespec="seconds"),
+            "seconds": round(time.time() - START, 1),
+            "requests": DIAG["requests"],
+            "steps": DIAG["steps"],
+            "errors": DIAG["errors"],
+        },
+    )
+    print(f"수집 끝 ({time.time() - START:.0f}s, 요청 {DIAG['requests']}회)", flush=True)
     return 0
 
 
