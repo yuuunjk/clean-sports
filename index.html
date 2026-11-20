@@ -225,8 +225,15 @@
   /* ── ⭐ 우리 팀 고르기 창 ─────────────────── */
   .sheet .fp-hint{margin:0 0 4px; color:var(--sub); font-size:17px; font-weight:700;}
   .favpick{display:grid; gap:2px;}
-  .favpick .fp-sport{font-size:18px; font-weight:900; color:#5b6b8c; margin:16px 0 8px;}
-  .favpick .fp-sport:first-child{margin-top:10px;}
+  .favpick .fp-sporthead{display:flex; align-items:center; gap:8px; margin:20px 0 8px;
+    font-size:21px; font-weight:900; letter-spacing:-.4px;}
+  .favpick .fp-sporthead:first-child{margin-top:12px;}
+  .favpick .fp-lg{margin:0 0 10px; padding:11px 13px 13px; border:2px solid #eef3fb;
+    border-radius:18px; background:#fbfdff;}
+  .favpick .fp-lname{display:flex; align-items:center; gap:7px; margin:0 0 9px;
+    font-size:16px; font-weight:900; color:#7c93bd; letter-spacing:-.2px;}
+  .favpick .fp-lname .cnt{font-size:13px; font-weight:800; color:#9fb0c9;}
+  .sheet .chips{padding:6px 2px 4px;}
   .favpick .teams{display:flex; flex-wrap:wrap; gap:8px;}
   .favpick .teambtn{background:#fff; border:2px solid var(--line); border-radius:999px; padding:9px 16px;
     font-size:18px; font-weight:800; color:var(--sub); min-height:48px;}
@@ -448,6 +455,11 @@
         <p class="hint">우리 팀과 설정을 지워요. 경기 정보는 그대로예요.</p>
         <button class="ghost" id="resetBtn">설정 지우기</button>
       </div>
+      <div class="panel">
+        <h3>🔄 웹앱 새로고침</h3>
+        <p class="hint">새 버전을 받아 다시 열어요. 우리 팀·승부예측 기록은 그대로 남아요.</p>
+        <button class="teambtn" id="hardRefreshBtn" style="width:100%;min-height:52px;font-size:19px">🔄 웹앱 새로고침</button>
+      </div>
     </section>
   </main>
 
@@ -480,6 +492,7 @@
     </div>
     <h2 id="favTitle">⭐ 우리 팀 고르기</h2>
     <p class="fp-hint">응원하는 팀을 눌러 두면 카드와 순위에서 반짝반짝 표시돼요.</p>
+    <div class="chips" id="favChips"></div>
     <div class="favpick" id="favBody"></div>
     <div class="fp-picked" id="favPicked">아직 고른 팀이 없어요</div>
     <button class="btn-close-all" id="favDone">다 골랐어요</button>
@@ -537,14 +550,33 @@ addEventListener("error", (e) => window.__errs.push(String(e.message || e.error)
 addEventListener("unhandledrejection", (e) => window.__errs.push("rejection: " + String(e.reason)));
 const $ = (sel, root = document) => root.querySelector(sel);
 const WEEK = ["일","월","화","수","목","금","토"];
-const SPORT_EMOJI = {야구:"⚾", 해외야구:"⚾", 축구:"⚽", 해외축구:"⚽", "국제 대회":"🌍",
-                     농구:"🏀", 미식축구:"🏈", 배구:"🏐", 기타:"🏅"};
-const SPORTS = ["전체","야구","축구","농구","배구","해외축구","미식축구","국제 대회","해외야구","기타"];
+const SPORT_EMOJI = {야구:"⚾", 해외야구:"⚾", 축구:"⚽", 해외축구:"⚽", "국제대회":"🌍", "국제 대회":"🌍",
+                     농구:"🏀", 해외농구:"🏀", 미식축구:"🏈", 배구:"🏐", 기타:"🏅"};
+/* 종목 순서 — 야구 · 해외야구 · 축구 · 해외축구 · 미식축구 · 농구 · 해외농구 · 배구 · 국제대회 · 기타 */
+const SPORTS = ["전체","야구","해외야구","축구","해외축구","미식축구","농구","해외농구","배구","국제대회","기타"];
+/* 옛 데이터의 표기를 지금 표기로 맞춘다 ('국제 대회' → '국제대회') */
+function normSport(s){
+  const v = String(s == null ? "" : s).trim();
+  return (v === "국제 대회" || v === "국제대회") ? "국제대회" : v;
+}
+/* 팀 이름 잡음 정리 — 같은 팀이 리그마다 다른 이름으로 나오는 경우를 하나로 */
+const TEAM_ALIAS = {"페네르바체": "페네르바흐체"};
+const LEAGUE_TEAM_ALIAS = {
+  "ita.1": {"샌안토니오": "사수올로"},        // SAS = NBA 샌안토니오와 겹쳐 세리에A 사수올로가 잘못 나온 것
+};
+function fixTeamName(name, leagueKey){
+  const n = String(name == null ? "" : name).trim();
+  if (!n) return n;
+  const key = String(leagueKey || "").replace(/^(soccer|basketball|baseball|football|hockey)\//, "");
+  const m = LEAGUE_TEAM_ALIAS[key];
+  if (m && m[n]) return m[n];
+  return TEAM_ALIAS[n] || n;
+}
 const KST_OFFSET = 9 * 60 * 60 * 1000;
 
 /* 🎯 승부예측 저장 키 (state 를 만들 때 바로 쓰므로 먼저 둔다) */
 const PRED_KEY = "sports.preds.v1";
-const DRAW_SPORTS = new Set(["축구", "해외축구", "국제 대회"]);   // 무승부가 있는 종목
+const DRAW_SPORTS = new Set(["축구", "해외축구", "국제대회"]);   // 무승부가 있는 종목
 const PRED_KEEP_MS = 7 * 86400000;                               // 오래된 미채점 예측 정리
 
 const state = {
@@ -563,6 +595,7 @@ const state = {
   liveMode: localStorage.getItem("sports.live") === "1",
   nightUnlockKey: loadNightUnlockKey(),
   parentPin: loadPinCache(),
+  favSport: "전체",
   directOK: null,
   teamsKo: null,
   koTeams: null,
@@ -856,13 +889,21 @@ async function loadAll(){
 /* ── 오늘 경기 ─────────────────────────── */
 /* 저장된 스냅샷의 옛 이름도 리그별 사전으로 바로잡는다 (MUN=바이에른 등) */
 function normTeam(t, leagueKey){
-  if (!t || !t.code || !leagueKey) return t;
-  const ko = koFor(leagueKey)[String(t.code).toUpperCase()];
-  return (ko && ko !== t.name) ? {...t, name: ko} : t;
+  if (!t) return t;
+  let out = t;
+  if (t.code && leagueKey){
+    const ko = koFor(leagueKey)[String(t.code).toUpperCase()];
+    if (ko && ko !== t.name) out = {...t, name: ko};
+  }
+  const fixed = fixTeamName(out.name, leagueKey);
+  return (fixed !== out.name) ? {...out, name: fixed} : out;
 }
 function normGame(g){
-  if (!g || !g.league) return g;
-  return {...g, home: normTeam(g.home, g.league), away: normTeam(g.away, g.league)};
+  if (!g) return g;
+  const sport = normSport(g.sport);
+  const base = (sport !== g.sport) ? {...g, sport, emoji: SPORT_EMOJI[sport] || g.emoji} : g;
+  if (!base.league) return base;
+  return {...base, home: normTeam(base.home, base.league), away: normTeam(base.away, base.league)};
 }
 function gameList(){
   const base = state.today?.games || [];
@@ -1171,40 +1212,14 @@ function closeArticle(){
 }
 
 /* ── 설정 ──────────────────────────────── */
-function teamsBySport(){
-  const map = new Map();
-  const add = (sport, team) => {
-    if (!team) return;
-    if (!map.has(sport)) map.set(sport, new Set());
-    map.get(sport).add(team);
-  };
-  for (const lg of state.standings?.leagues || []) for (const r of lg.rows) add(lg.sport, r.team);
-  for (const g of gameList()){
-    if (g.away && g.away.name && g.sport !== "기타") add(g.sport, g.home?.name);
-    if (g.away && g.away.name && g.sport !== "기타") add(g.sport, g.away?.name);
-  }
-  return map;
-}
 function renderSettings(){
-  const map = teamsBySport();
-  const order = SPORTS.filter(s => s !== "전체" && map.has(s));
-  $("#favSports").innerHTML = order.map(sport => `
-    <div style="margin-bottom:14px">
-      <div style="font-size:17px;font-weight:900;color:#5b6b8c;margin-bottom:6px">${SPORT_EMOJI[sport]||"🏅"} ${esc(sport)}</div>
-      <div class="teams">
-        ${[...map.get(sport)].sort((a,b)=>a.localeCompare(b,"ko")).map(t => `
-          <button class="teambtn ${isFav(t)?"on":""}" data-team="${esc(t)}">${isFav(t)?"⭐ ":""}${esc(t)}</button>
-        `).join("")}
-      </div>
-    </div>`).join("") || `<p class="hint">순위나 경기 정보가 들어오면 팀 목록이 나타나요.</p>`;
-  $("#favSports").querySelectorAll(".teambtn").forEach(b => {
-    b.onclick = () => {
-      const t = b.dataset.team;
-      const i = state.favorites.indexOf(t);
-      if (i >= 0) state.favorites.splice(i, 1); else state.favorites.push(t);
-      saveFav(); renderSettings(); renderToday(); renderStandings(); updateFavBtn();
-    };
-  });
+  /* ⭐ 우리 팀은 위쪽 '⭐ 우리 팀' 버튼이 전담한다 — 여기서는 고른 팀만 보여 준다 */
+  const picked = state.favorites.length
+    ? `<p class="hint" style="margin-bottom:10px">⭐ ${state.favorites.map(esc).join(" · ")}</p>`
+    : `<p class="hint" style="margin-bottom:10px">아직 고른 팀이 없어요.</p>`;
+  $("#favSports").innerHTML = `${picked}<button class="teambtn" id="openFavFromSettings" style="width:100%;min-height:52px;font-size:19px">⭐ 우리 팀 고르기</button>`;
+  const openBtn = $("#openFavFromSettings");
+  if (openBtn) openBtn.onclick = () => openFavPicker();
 
   const opts = [[1,"1분"],[5,"5분"],[15,"15분"],[0,"끔"]];
   $("#intervalSeg").innerHTML = opts.map(([v,l]) =>
@@ -1223,7 +1238,53 @@ function renderSettings(){
   $("#sDirect").textContent = state.directOK === null ? "확인 중…" : (state.directOK ? "가능 ✅ (1분 갱신)" : "차단됨 → 5분 자동 갱신");
 }
 
-/* ── ⭐ 우리 팀 고르기 창 (상단 '⭐ 우리 팀' 버튼) ── */
+/* ── ⭐ 우리 팀 고르기 창 (상단 '⭐ 우리 팀' 버튼) ──
+   팀이 200개 가까이 되니 종목 칩 → 리그별 묶음으로 나누어 찾기 쉽게 한다. */
+const leagueKeyOf = (id) => String(id || "").replace(/^(soccer|basketball|baseball|football|hockey|volleyball)\//, "");
+/* 종목 → 리그 → 팀 모음 */
+function leagueTree(){
+  const tree = new Map();
+  const add = (sport, lid, lname, team) => {
+    const s = normSport(sport);
+    const name = fixTeamName(team, lid);
+    if (!s || s === "기타" || !name) return;
+    if (!tree.has(s)) tree.set(s, new Map());
+    const leagues = tree.get(s);
+    const key = leagueKeyOf(lid) || String(lname || s);
+    if (!leagues.has(key)) leagues.set(key, { name: lname || lid || s, teams: new Set() });
+    leagues.get(key).teams.add(name);
+  };
+  for (const lg of state.standings?.leagues || []){
+    for (const r of lg.rows) add(lg.sport, lg.id, lg.name, r.team);
+  }
+  for (const g of gameList()){
+    if (!g.away || !g.away.name) continue;          // 단일 종목 이벤트(골프 대회 등)는 팀이 없다
+    add(g.sport, g.league, g.leagueName, g.home?.name);
+    add(g.sport, g.league, g.leagueName, g.away?.name);
+  }
+  return tree;
+}
+/* 리그 이름 순서 — 한국 리그를 먼저, 그 다음 해외 리그 */
+const LEAGUE_RANK = ["kbo","mlb","kleague.1","kleague.2","kbl","nba","kovo","nfl",
+                     "eng.1","esp.1","ita.1","ger.1","tur.1","uefa.champions"];
+function leagueOrder(a, b){
+  const ia = LEAGUE_RANK.indexOf(a[0]);
+  const ib = LEAGUE_RANK.indexOf(b[0]);
+  if (ia !== ib) return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+  return String(a[1].name).localeCompare(String(b[1].name), "ko");
+}
+function favTeamCount(tree, sport){
+  if (sport === "전체"){
+    let n = 0;
+    for (const leagues of tree.values()) for (const lg of leagues.values()) n += lg.teams.size;
+    return n;
+  }
+  const leagues = tree.get(sport);
+  if (!leagues) return 0;
+  let n = 0;
+  for (const lg of leagues.values()) n += lg.teams.size;
+  return n;
+}
 function updateFavBtn(){
   const btn = $("#favBtn");
   if (!btn) return;
@@ -1242,19 +1303,46 @@ function renderFavPicked(){
 function renderFavPicker(){
   const body = $("#favBody");
   if (!body) return;
-  const map = teamsBySport();
-  const order = SPORTS.filter(s => s !== "전체" && map.has(s));
-  body.innerHTML = order.length
-    ? order.map(sport => `
-        <div>
-          <div class="fp-sport">${SPORT_EMOJI[sport] || "🏅"} ${esc(sport)}</div>
+  const tree = leagueTree();
+  const sports = SPORTS.filter(s => s !== "전체" && tree.has(s));
+  if (!sports.length){
+    const chips = $("#favChips");
+    if (chips) chips.innerHTML = "";
+    body.innerHTML = `<p class="fp-empty">팀 목록을 아직 못 받았어요.<br>경기·순위 정보를 받은 뒤에 다시 열어 주세요.</p>`;
+    renderFavPicked(); updateFavBtn();
+    return;
+  }
+  if (state.favSport !== "전체" && !sports.includes(state.favSport)) state.favSport = "전체";
+
+  const chips = $("#favChips");
+  if (chips){
+    chips.innerHTML = ["전체", ...sports].map(s => `
+      <button class="chip ${state.favSport === s ? "on" : ""}" data-fs="${esc(s)}">
+        ${s === "전체" ? "🏟️ 전체" : `${SPORT_EMOJI[s] || "🏅"} ${esc(s)}`}<span class="num">${favTeamCount(tree, s)}</span>
+      </button>`).join("");
+    chips.querySelectorAll(".chip").forEach(b => {
+      b.onclick = () => { state.favSport = b.dataset.fs; renderFavPicker(); };
+    });
+  }
+
+  const shown = state.favSport === "전체" ? sports : [state.favSport];
+  let html = "";
+  for (const sport of shown){
+    const leagues = [...(tree.get(sport) || new Map()).entries()].sort(leagueOrder);
+    if (state.favSport === "전체"){
+      html += `<div class="fp-sporthead">${SPORT_EMOJI[sport] || "🏅"} ${esc(sport)}</div>`;
+    }
+    for (const [lid, info] of leagues){
+      const teams = [...info.teams].sort((a, b) => a.localeCompare(b, "ko"));
+      html += `<div class="fp-lg">
+          <div class="fp-lname">🏆 ${esc(info.name)}<span class="cnt">${teams.length}팀</span></div>
           <div class="teams">
-            ${[...map.get(sport)].sort((a, b) => a.localeCompare(b, "ko")).map(t => `
-              <button class="teambtn ${isFav(t) ? "on" : ""}" data-team="${esc(t)}">${isFav(t) ? "⭐ " : ""}${esc(t)}</button>
-            `).join("")}
+            ${teams.map(t => `<button class="teambtn ${isFav(t) ? "on" : ""}" data-team="${esc(t)}">${isFav(t) ? "⭐ " : ""}${esc(t)}</button>`).join("")}
           </div>
-        </div>`).join("")
-    : `<p class="fp-empty">팀 목록을 아직 못 받았어요.<br>경기·순위 정보를 받은 뒤에 다시 열어 주세요.</p>`;
+        </div>`;
+    }
+  }
+  body.innerHTML = html;
   body.querySelectorAll(".teambtn").forEach(b => { b.onclick = () => toggleFavTeam(b.dataset.team); });
   renderFavPicked();
   updateFavBtn();
@@ -1264,8 +1352,16 @@ function toggleFavTeam(team){
   const i = state.favorites.indexOf(team);
   if (i >= 0) state.favorites.splice(i, 1); else state.favorites.push(team);
   saveFav();
-  renderFavPicker();
-  renderSettings(); renderToday(); renderStandings();
+  /* 목록을 다시 그리면 스크롤이 튀어서 누른 버튼만 바꿔 준다 */
+  document.querySelectorAll("#favBody .teambtn").forEach(b => {
+    if (b.dataset.team !== team) return;
+    const on = isFav(team);
+    b.classList.toggle("on", on);
+    b.textContent = `${on ? "⭐ " : ""}${team}`;
+  });
+  renderFavPicked();
+  updateFavBtn();
+  renderToday(); renderStandings();
 }
 function openFavPicker(){
   renderFavPicker();
@@ -1321,7 +1417,7 @@ function setupLive(){
 const ESPN_SITE = "https://site.api.espn.com/apis/site/v2/sports";
 const ESPN_LEAGUES = [
   {espn:"baseball/mlb", sport:"야구", name:"MLB"},
-  {espn:"basketball/nba", sport:"농구", name:"NBA"},
+  {espn:"basketball/nba", sport:"해외농구", name:"NBA"},
   {espn:"football/nfl", sport:"미식축구", name:"NFL"},
   {espn:"soccer/eng.1", sport:"해외축구", name:"프리미어리그"},
   {espn:"soccer/esp.1", sport:"해외축구", name:"라리가"},
@@ -1329,14 +1425,14 @@ const ESPN_LEAGUES = [
   {espn:"soccer/ita.1", sport:"해외축구", name:"세리에A"},
   {espn:"soccer/tur.1", sport:"해외축구", name:"튀르키예 쉬페르리그"},
   {espn:"soccer/uefa.champions", sport:"해외축구", name:"챔피언스리그"},
-  {espn:"soccer/fifa.world", sport:"국제 대회", name:"월드컵", intl:true},
-  {espn:"soccer/fifa.worldq.afc", sport:"국제 대회", name:"월드컵 아시아 예선", intl:true},
-  {espn:"soccer/afc.asian.cup", sport:"국제 대회", name:"아시안컵", intl:true},
-  {espn:"soccer/uefa.nations", sport:"국제 대회", name:"네이션스리그", intl:true},
-  {espn:"soccer/uefa.euro", sport:"국제 대회", name:"유로", intl:true},
-  {espn:"soccer/caf.nations", sport:"국제 대회", name:"아프리카 네이션스컵", intl:true},
-  {espn:"soccer/conmebol.america", sport:"국제 대회", name:"코파 아메리카", intl:true},
-  {espn:"soccer/fifa.friendly", sport:"국제 대회", name:"국가대표 평가전", intl:true},
+  {espn:"soccer/fifa.world", sport:"국제대회", name:"월드컵", intl:true},
+  {espn:"soccer/fifa.worldq.afc", sport:"국제대회", name:"월드컵 아시아 예선", intl:true},
+  {espn:"soccer/afc.asian.cup", sport:"국제대회", name:"아시안컵", intl:true},
+  {espn:"soccer/uefa.nations", sport:"국제대회", name:"네이션스리그", intl:true},
+  {espn:"soccer/uefa.euro", sport:"국제대회", name:"유로", intl:true},
+  {espn:"soccer/caf.nations", sport:"국제대회", name:"아프리카 네이션스컵", intl:true},
+  {espn:"soccer/conmebol.america", sport:"국제대회", name:"코파 아메리카", intl:true},
+  {espn:"soccer/fifa.friendly", sport:"국제대회", name:"국가대표 평가전", intl:true},
 ];
 const INT_LEAGUES = new Set(ESPN_LEAGUES.filter(l => l.intl).map(l => l.espn));
 const KO_BY_LEAGUE = {
@@ -1403,9 +1499,9 @@ function espnStatus(comp, sport){
   if (stt === "pre") return ["upcoming", ""];
   if (stt === "post") return ["done", "종료"];
   let label = "진행 중";
-  if (sport === "농구") label = period ? `${period}쿼터` : "진행 중";
+  if (sport === "농구" || sport === "해외농구") label = period ? `${period}쿼터` : "진행 중";
   else if (sport === "야구") label = period ? `${period}회` : "진행 중";
-  else if (sport === "해외축구" || sport === "축구" || sport === "국제 대회")
+  else if (sport === "해외축구" || sport === "축구" || sport === "국제대회")
     label = (period >= 2 ? "후반" : "전반") + (clock ? ` ${clock}` : "");
   else if (sport === "미식축구"){
     const words = `${stype.description || ""} ${stype.shortDetail || ""}`.toLowerCase();
@@ -1703,6 +1799,7 @@ function nightTick(){
 /* ── 부모님 확인 (비밀번호 4자리) ── */
 let pinValue = "";
 let pinBusy = false;
+let pinPurpose = "night";          // 'night' = 야간 잠금 풀기 / 'settings' = 설정 열기
 function renderPinDots(){
   const n = pinValue.length;
   document.querySelectorAll("#pinDots span").forEach((d, i) => d.classList.toggle("on", i < n));
@@ -1720,9 +1817,16 @@ function markPinBad(){
   void field.offsetWidth;
   field.classList.add("bad");
 }
-function openPin(){
+function openPin(purpose){
+  pinPurpose = (purpose === "settings") ? "settings" : "night";
   pinValue = "";
   pinBusy = false;
+  const title = $("#pinTitle");
+  const sub = $("#pinSub");
+  if (title) title.textContent = "부모님 확인";
+  if (sub) sub.innerHTML = pinPurpose === "settings"
+    ? "설정은 부모님만 열 수 있어요<br>비밀번호 4자리를 눌러 주세요"
+    : "부모님만 열 수 있어요<br>비밀번호 4자리를 눌러 주세요";
   const field = $("#pinField");
   if (field) field.classList.remove("bad");
   const err = $("#pinErr");
@@ -1777,7 +1881,16 @@ async function submitPin(){
     markPinBad();
     return;
   }
-  if (pinValue === pin){ unlockNight(); return; }
+  if (pinValue === pin){
+    if (pinPurpose === "settings"){
+      closePin();
+      openSettingsTab();
+      toast("🔓 부모님 확인 — 설정을 열었어요");
+      return;
+    }
+    unlockNight();
+    return;
+  }
   if (err) err.textContent = "비밀번호가 맞지 않아요";
   markPinBad();
   pinValue = "";
@@ -1805,7 +1918,29 @@ function relockNow(){
   toast("🌙 다시 잠갔어요");
 }
 
+/* 🔄 웹앱 새로고침 — 서비스 워커·캐시를 비우고 새 버전을 받아 다시 연다.
+   localStorage(우리 팀·승부예측·비밀번호 캐시)는 지우지 않는다. */
+async function hardRefreshApp(){
+  toast("🔄 새 버전을 받는 중…");
+  try {
+    if ("caches" in window){
+      const keys = await caches.keys();
+      await Promise.all(keys.map(k => caches.delete(k)));
+    }
+  } catch {}
+  try {
+    if ("serviceWorker" in navigator){
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map(r => r.unregister().catch(() => null)));
+    }
+  } catch {}
+  const base = location.origin + location.pathname;
+  location.replace(base);            // 쿼리 없이 깨끗한 주소로 다시 연다
+}
+
 /* ── 이벤트 연결 ─────────────────────── */
+let showTabGlobal = null;            // 부모님 확인을 거친 뒤 설정 탭을 열기 위해 바깥에 둔다
+function openSettingsTab(){ if (showTabGlobal) showTabGlobal("settings"); }
 function bind(){
   const showTab = (name) => {
     state.tab = name;
@@ -1818,10 +1953,11 @@ function bind(){
     if (name === "predict") renderPredict();
     window.scrollTo({top:0, behavior:"smooth"});
   };
+  showTabGlobal = showTab;
   $("#tabs").querySelectorAll(".tab").forEach(t => {
     t.onclick = () => showTab(t.dataset.tab);
   });
-  $("#settingsBtn").onclick = () => showTab("settings");
+  $("#settingsBtn").onclick = () => openPin("settings");
   /* ⭐ 우리 팀 버튼 — 바로 옆에서 팀을 고른다 */
   $("#favBtn").onclick = openFavPicker;
   $("#favClose").onclick = closeFavPicker;
@@ -1860,6 +1996,7 @@ function bind(){
     state.liveMode = false; localStorage.setItem("sports.live","0");
     setupTimer(); setupLive(); renderAll();
   };
+  $("#hardRefreshBtn").onclick = hardRefreshApp;
   $("#resetPredBtn").onclick = () => {
     if (!Object.keys(state.preds).length){ alert("지울 예측 기록이 없어요."); return; }
     if (!confirm("내 승부예측 기록을 모두 지울까요? 되돌릴 수 없어요.")) return;
