@@ -181,6 +181,10 @@ def sport_of(game: dict) -> str:
     return SPORT_BY_UPPER.get(upper, "일반")
 
 
+TEAM_SPORTS = ("야구", "해외야구", "축구", "해외축구", "농구", "배구")
+VS_TITLE = re.compile(r"\s(vs|v)\s", re.I)
+
+
 def is_junk(game: dict) -> bool:
     home = (game.get("homeTeamName") or "").strip()
     away = (game.get("awayTeamName") or "").strip()
@@ -190,6 +194,9 @@ def is_junk(game: dict) -> bool:
     if title and JUNK_TITLE.search(title):
         return True
     if not title and not home:
+        return True
+    # 팀 종목인데 팀 이름이 없으면 중계·특집 방송이다 (단, 'A vs B' 경기 표기는 살린다)
+    if sport_of(game) in TEAM_SPORTS and not VS_TITLE.search(title):
         return True
     return False
 
@@ -349,7 +356,7 @@ def parse_standing_row(row: dict) -> dict | None:
         "emblem": first_not_none(row, "teamEmblemUrl", "teamImageUrl", "emblem") or "",
         "games": first_not_none(row, "matchesPlayed", "gameCount", "games"),
         "w": first_not_none(row, "wins", "winGameCount", "win"),
-        "d": first_not_none(row, "draws", "drawnGameCount", "draw"),
+        "d": first_not_none(row, "draws", "drawnGameCount", "draw", "drawn"),
         "l": first_not_none(row, "losses", "loseGameCount", "lose"),
         "rate": first_not_none(row, "wra", "winRate", "winPercentage"),
         "points": first_not_none(row, "points", "gainPoint", "seasonPoints"),
@@ -593,9 +600,41 @@ def summarize(title: str, lines: list[str], n: int = 3) -> list[str]:
 
 
 def fallback_summary(sub_content: str) -> list[str]:
-    text = re.sub(r"^\[[^\]]{1,25}\]\s*", "", sub_content or "").strip()
+    """기사 목록의 subContent(리드)만으로 3줄을 만든다. 사진 캡션·머리말은 걷어낸다."""
+    text = (sub_content or "").strip()
+    text = re.sub(r"(사진|자료|제공|이미지)\s*=\s*[^.\n]{0,70}", " ", text)
+    text = re.sub(r"[▲▶◀]\s*[^.\n]{0,70}", " ", text)
+    text = re.sub(r"ⓒ\s*\S+", " ", text)
+    # '질문 답하는 ○○○. / 사진=…' 처럼 앞에 붙은 사진 설명을 잘라 낸다
+    cut = re.match(r"^[^/]{0,80}/\s*", text)
+    if cut:
+        text = text[cut.end():]
+    m = re.search(r"\[[^\]]{1,40}(기자|특파원)[^\]]*\]\s*", text[:120])
+    if m:
+        text = text[m.end():]
+    else:
+        text = re.sub(r"^\[[^\]]{1,25}\]\s*", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
     sents = split_sentences([text]) if text else []
-    return [clip(s) for s in sents[:3]]
+    out = [clip(s).lstrip(". ,·/") for s in sents[:3]]
+    return [x for x in out if len(x) >= 12][:3]
+
+
+CAPTION_HINT = re.compile(r"(사진|제공|ⓒ|이미지|캡션|/ )")
+
+
+def polish_summary(lines: list[str]) -> list[str]:
+    """사진 캡션·출처 문구가 섞인 줄을 걷어낸다. 두 줄 이상 남을 때만 적용."""
+    good = []
+    for line in lines:
+        if CAPTION_HINT.search(line) and len(line) < 70:
+            continue
+        if re.match(r"^\(?[가-힣A-Za-z·]{2,12}\s*(기자|특파원)\)?", line):
+            continue
+        if len(line.strip()) < 12:
+            continue
+        good.append(line)
+    return good if len(good) >= 2 else lines
 
 
 def build_news(now: datetime, cache: dict) -> bool:
@@ -658,6 +697,7 @@ def build_news(now: datetime, cache: dict) -> bool:
                 summary = summarize(title, clean_lines(get_body_html(page))) if page else []
                 if not summary:
                     summary = fallback_summary(sub)
+                summary = polish_summary(summary)
                 if not summary or not is_safe(" ".join(summary)):
                     continue
             seen_titles.add(key)
