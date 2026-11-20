@@ -702,7 +702,7 @@ def build_news(now: datetime, cache: dict) -> bool:
 # ---------------------------------------------------------------- main
 
 
-def preflight() -> None:
+def preflight() -> bool:
     """api-gw 접근이 되는지부터 5초 안에 확인한다 (로그로 판단할 수 있게)."""
     url = f"{API}/schedule/today-games?date={datetime.now(KST):%Y-%m-%d}&fields=categoryId"
     started = time.time()
@@ -710,9 +710,60 @@ def preflight() -> None:
         raw = http_get(url, timeout=6, retries=0)
         print(f"  preflight OK ({time.time() - started:.1f}s, {len(raw)} bytes)", flush=True)
         DIAG["steps"].append({"preflight": "ok", "seconds": round(time.time() - started, 1)})
+        return True
     except Exception as exc:  # noqa: BLE001
         print(f"  preflight FAIL ({time.time() - started:.1f}s): {exc}", flush=True)
         DIAG["steps"].append({"preflight": "fail", "error": str(exc)[:200]})
+        return False
+
+
+def network_probe() -> None:
+    """어디까지 닿는지 한 번에 확인한다 (Actions 환경 판정용)."""
+    import subprocess
+
+    tests = [
+        ("api-gw(urllib)", "urllib"),
+        ("api-gw(curl h1)", "curl"),
+        ("api-gw(curl h2)", "curl2"),
+        ("sports.news index", "news"),
+        ("control(mlb api)", "control"),
+    ]
+    curl_common = ["-sS", "-m", "8", "-o", "/dev/null", "-w", "%{http_code} %{size_download} %{time_total}"]
+    for label, kind in tests:
+        try:
+            if kind == "urllib":
+                url = f"{API}/schedule/today-games?date={datetime.now(KST):%Y-%m-%d}&fields=categoryId"
+                raw = http_get(url, timeout=7, retries=0)
+                print(f"  probe {label}: OK {len(raw)}bytes", flush=True)
+            elif kind == "curl":
+                url = f"{API}/schedule/today-games?date={datetime.now(KST):%Y-%m-%d}&fields=categoryId"
+                out = subprocess.run(
+                    ["curl", "--http1.1", "-A", UA, *curl_common, url],
+                    capture_output=True, text=True, timeout=20,
+                )
+                print(f"  probe {label}: {out.stdout.strip() or out.stderr.strip()[:120]}", flush=True)
+            elif kind == "curl2":
+                url = f"{API}/schedule/today-games?date={datetime.now(KST):%Y-%m-%d}&fields=categoryId"
+                out = subprocess.run(
+                    ["curl", "--http2", "-A", UA, *curl_common, url],
+                    capture_output=True, text=True, timeout=20,
+                )
+                print(f"  probe {label}: {out.stdout.strip() or out.stderr.strip()[:120]}", flush=True)
+            elif kind == "news":
+                out = subprocess.run(
+                    ["curl", "-A", UA, *curl_common, "https://sports.news.naver.com/index"],
+                    capture_output=True, text=True, timeout=20,
+                )
+                print(f"  probe {label}: {out.stdout.strip() or out.stderr.strip()[:120]}", flush=True)
+            else:
+                out = subprocess.run(
+                    ["curl", "-m", "8", "-o", "/dev/null", "-w", "%{http_code} %{size_download}",
+                     "https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=2026-11-20"],
+                    capture_output=True, text=True, timeout=20,
+                )
+                print(f"  probe {label}: {out.stdout.strip() or out.stderr.strip()[:120]}", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  probe {label}: FAIL {type(exc).__name__} {str(exc)[:100]}", flush=True)
 
 
 def main() -> int:
@@ -723,7 +774,8 @@ def main() -> int:
     now = datetime.now(KST)
     print(f"[{now.isoformat(timespec='seconds')}] 네이버 스포츠 수집 시작 (예산 {TIME_BUDGET}s)", flush=True)
 
-    preflight()
+    if not preflight():
+        network_probe()
 
     steps = [
         ("today", lambda: build_today(now)),
