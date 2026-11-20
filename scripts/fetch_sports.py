@@ -490,13 +490,17 @@ SOURCE_BONUS = {
 DROP_PAT = [
     r"^\[?[가-힣A-Za-z·\s]{0,12}(기자|특파원)\]?\s*$",
     r"^\[?[A-Za-z가-힣\s]{2,15}=\s*[가-힣]{2,4}\s*기자\]?",
-    r"ⓒ|무단 전재|재배포 금지|Copyright",
+    r"^Copyright",
     r"^[▲▶☞※◇◆■●]",
     r"^사진\s*=|^자료\s*=|^제공\s*=",
     r"^\[사진\]|^\[영상\]|^\[그래픽\]|^\[포토\]",
     r"구독|알림 설정|로그인|댓글",
     r"야구해외야구축구해외축구농구배구",
 ]
+# 본문 뒤에 붙는 사진 출처·저작권 문구는 줄을 버리지 말고 잘라 낸다
+CREDIT = re.compile(
+    r"(사진\s*=\s*ⓒ?[^\s]*|ⓒ\s*[^\s]*|\[사진[^\]]*\]|무단 전재[^.]*|재배포 금지[^.]*|Copyright[^\s]*)"
+)
 NAV_NOISE = ("본문의 검색 링크는 AI 자동 인식", "네이버 스포츠에서 보기")
 
 
@@ -538,9 +542,13 @@ def clean_lines(text: str) -> list[str]:
     out = []
     for line in text.split("\n"):
         line = re.sub(r"\s+", " ", line).strip()
-        line = re.sub(r"^\[[^\]]{1,25}\]\s*[가-힣]{2,4}\s*기자\s*=\s*", "", line)
-        line = re.sub(r"^\[[^\]]{1,25}=\s*[가-힣]{2,4}\s*기자\]\s*", "", line)
+        line = CREDIT.sub(" ", line)
+        # [매체=홍길동 기자] / [이데일리 스타in 주영로 기자] 같은 머리말 제거
+        m = re.match(r"^\[([^\]]{1,40})\]\s*", line)
+        if m and any(k in m.group(1) for k in ("기자", "특파원", "=", "통신", "뉴스")):
+            line = line[m.end():]
         line = re.sub(r"^[가-힣]{2,4}\s*기자\s*=\s*", "", line)
+        line = re.sub(r"\s+", " ", line).strip()
         if len(line) < 15:
             continue
         if any(noise in line for noise in NAV_NOISE):
@@ -556,19 +564,24 @@ CLOSE_Q = "”’\"'」』"
 
 
 def split_sentences(lines: list[str]) -> list[str]:
-    sents, buf, depth = [], "", 0
+    """줄 → 문장. 따옴표 안에서는 자르지 않는다(인용문이 중간에서 끊기지 않게)."""
+    sents, buf = [], ""
+    depth, opener = 0, ""
     for line in lines:
         for ch in line:
-            if ch in OPEN_Q:
-                depth = min(depth + 1, 2)
-            elif ch in CLOSE_Q:
-                depth = max(depth - 1, 0)
+            if depth == 0 and ch in "“‘「『":
+                depth, opener = 1, ch
+            elif depth == 1 and ch in "”’」』":
+                depth, opener = 0, ""
+            elif depth == 0 and ch in "\"'":
+                depth, opener = 1, ch
+            elif depth == 1 and ch == opener:
+                depth, opener = 0, ""
             buf += ch
             if ch in ".!?" and depth == 0:
+                # 소수점(0.589)·약어는 문장 끝이 아니다
                 if ch == "." and not re.search(r"[다요]\.[\s]?$", buf + " "):
-                    # 숫자 소수점(0.589)이나 약어는 문장 끝이 아니다
-                    if not re.search(r"[가-힣]\.[\s]?$", buf + " "):
-                        continue
+                    continue
                 sents.append(buf.strip())
                 buf = ""
         if buf.strip():
@@ -580,7 +593,7 @@ def split_sentences(lines: list[str]) -> list[str]:
     seen, uniq = set(), []
     for s in sents:
         s = s.strip(" ,·")
-        if not (25 <= len(s) <= 260):
+        if not (12 <= len(s) <= 260):
             continue
         key = s[:24]
         if key in seen:
