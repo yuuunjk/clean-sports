@@ -70,7 +70,6 @@
   .grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:14px;}
   .card{background:var(--card); border:2px solid var(--line); border-radius:var(--radius);
     padding:16px 18px 14px; box-shadow:var(--shadow); position:relative; overflow:hidden;}
-  .card.live{border-color#ffc9c9;}
   .card.live{border:3px solid #ffc9c9; background:linear-gradient(180deg,#fff8f8,#fff);}
   .card.done{background:#fbfdff;}
   .card.fav{border-color:var(--fav-line); background:linear-gradient(180deg,var(--fav),#fff);}
@@ -319,7 +318,6 @@ function fmtUpdated(iso){
   if (!iso) return "-";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  const k = new Date(d.getTime() + (KST_OFFSET - new Date().getTimezoneOffset()*60000) * 0);
   const hh = String(d.getHours()).padStart(2,"0");
   const mm = String(d.getMinutes()).padStart(2,"0");
   return `${d.getMonth()+1}월 ${d.getDate()}일 ${hh}:${mm}`;
@@ -399,7 +397,7 @@ function renderSportChips(){
     btn.onclick = () => { state.sport = btn.dataset.sport; renderSportChips(); renderToday(); };
   });
 }
-function teamBlock(t, win, small){
+function teamBlock(t, win){
   if (!t || !t.name) return "";
   const logo = t.emblem
     ? `<span class="logo" data-initial="${esc(initial(t.name))}"><img src="${esc(t.emblem)}" alt="" loading="lazy" onerror="this.remove()"></span>`
