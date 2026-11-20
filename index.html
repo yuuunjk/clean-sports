@@ -116,6 +116,8 @@
   td.teamcell{text-align:left; font-weight:900; font-size:20px;}
   td.teamcell .emb{width:30px; height:30px; object-fit:contain; vertical-align:middle; margin-right:8px;}
   td.rank{font-weight:900; color:var(--blue);}
+  .grp{font-size:14px; font-weight:800; color:#7c8aa5; background:#eef3fb; border-radius:999px;
+    padding:1px 8px; margin-left:6px; vertical-align:2px;}
   .last5{display:inline-flex; gap:3px;}
   .last5 i{width:11px; height:11px; border-radius:50%; display:inline-block;}
   .last5 .W{background:var(--green);} .last5 .L{background:#e0574a;} .last5 .D{background:#c3ccdd;}
@@ -392,7 +394,7 @@ function sportCounts(){
 }
 function renderSportChips(){
   const counts = sportCounts();
-  const chips = SPORTS.filter(s => s === "전체" || counts[s]);
+  const chips = SPORTS.slice();
   $("#sportChips").innerHTML = chips.map(s => `
     <button class="chip ${state.sport===s?"on":""}" data-sport="${esc(s)}">
       ${s === "전체" ? "🏟️ 전체" : `${SPORT_EMOJI[s]||"🏅"} ${esc(s)}`}<span class="num">${counts[s]||0}</span>
@@ -524,6 +526,12 @@ function renderStandingChips(){
     b.onclick = () => { state.league = b.dataset.id; renderStandingChips(); renderStandings(); };
   });
 }
+const GROUP_KOR = {EASTERN: "동부", WESTERN: "서부", EAST: "동부", WEST: "서부"};
+function groupTag(group){
+  if (!group) return "";
+  const label = GROUP_KOR[group] || group.replace(/파이널 그룹\s*/, "");
+  return `<span class="grp">${esc(label)}</span>`;
+}
 function renderStandings(){
   const body = $("#standingsBody");
   const leagues = state.standings?.leagues || [];
@@ -539,7 +547,7 @@ function renderStandings(){
     const last5 = (r.last5 || "").split("").map(c => `<i class="${c}"></i>`).join("");
     return `<tr class="${fav?"fav":""}">
       <td class="rank">${esc(r.rank)}</td>
-      <td class="teamcell">${r.emblem?`<img class="emb" src="${esc(r.emblem)}" alt="" loading="lazy" onerror="this.remove()">`:""}${esc(r.team)} ${fav?"⭐":""}</td>
+      <td class="teamcell">${r.emblem?`<img class="emb" src="${esc(r.emblem)}" alt="" loading="lazy" onerror="this.remove()">`:""}${esc(r.team)} ${fav?"⭐":""}${groupTag(r.group)}</td>
       <td>${r.games ?? "-"}</td>
       <td>${r.w ?? "-"}</td>
       <td>${r.d ?? "-"}</td>
