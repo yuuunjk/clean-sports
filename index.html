@@ -316,6 +316,9 @@
   .teambtn{border:2px solid var(--line); background:#fff; border-radius:999px; padding:9px 16px;
     font-size:18px; font-weight:800; color:var(--sub); min-height:48px;}
   .teambtn.on{background:#fff3c9; border-color:var(--fav-line); color:#7a5200;}
+  .timeinput{font-family:inherit; font-size:19px; font-weight:800; color:var(--ink);
+    background:#fff; border:2px solid var(--line); border-radius:12px; padding:8px 12px; min-height:46px;}
+  .timeinput:focus{outline:none; border-color:#93c5fd; box-shadow:0 0 0 3px #e8f1ff;}
   .row{display:flex; align-items:center; justify-content:space-between; gap:14px; padding:12px 0;
     border-bottom:1px solid #f0f4fb; flex-wrap:wrap;}
   .row:last-child{border-bottom:0;}
@@ -456,6 +459,17 @@
         <button class="ghost" id="resetBtn">설정 지우기</button>
       </div>
       <div class="panel">
+        <h3>🌙 자동 잠금 시간</h3>
+        <p class="hint">밤부터 다음날 아침까지 앱을 잠그는 시간이에요. 자정을 넘겨도 괜찮아요.</p>
+        <div class="row"><span class="k">시작</span>
+          <input class="timeinput" id="nightFromInput" type="time" step="60" value="21:00" aria-label="잠금 시작 시각"></div>
+        <div class="row"><span class="k">끝</span>
+          <input class="timeinput" id="nightToInput" type="time" step="60" value="08:00" aria-label="잠금 끝 시각"></div>
+        <div class="row"><span class="k">지금 설정</span><span class="v" id="nightRangeLabel">21:00 ~ 08:00</span></div>
+        <button class="teambtn" id="nightSaveBtn" style="width:100%;min-height:52px;font-size:19px;margin-top:10px">🌙 잠금 시간 저장</button>
+        <p class="hint" id="nightRangeState" style="margin-top:9px;margin-bottom:0"></p>
+      </div>
+      <div class="panel">
         <h3>🔄 웹앱 새로고침</h3>
         <p class="hint">새 버전을 받아 다시 열어요. 우리 팀·승부예측 기록은 그대로 남아요.</p>
         <button class="teambtn" id="hardRefreshBtn" style="width:100%;min-height:52px;font-size:19px">🔄 웹앱 새로고침</button>
@@ -504,7 +518,7 @@
      aria-labelledby="nightLockTitle" aria-hidden="true">
   <div class="nl-ico" aria-hidden="true">🔒</div>
   <h2 id="nightLockTitle">지금은 사용 시간이 아니에요</h2>
-  <p>🌙 밤 9시 ~ 아침 8시는 잠금 시간이에요<br>아침 8시가 되면 저절로 열려요</p>
+  <p id="nightLockMsg">🌙 밤 9시 ~ 아침 8시는 잠금 시간이에요<br>아침 8시가 되면 저절로 열려요</p>
   <button class="nl-btn" id="nightUnlockBtn" type="button">부모님 확인</button>
   <div class="nl-clock" id="nightLockClock"></div>
 </div>
@@ -595,6 +609,8 @@ const state = {
   liveMode: localStorage.getItem("sports.live") === "1",
   nightUnlockKey: loadNightUnlockKey(),
   parentPin: loadPinCache(),
+  nightFrom: loadClockPref("sports.nightFrom", "21:00"),
+  nightTo: loadClockPref("sports.nightTo", "08:00"),
   favSport: "전체",
   directOK: null,
   teamsKo: null,
@@ -1236,6 +1252,39 @@ function renderSettings(){
   $("#sGames").textContent = (state.today?.total ?? "-") + "경기";
   $("#sNews").textContent = (state.news?.total ?? "-") + "건";
   $("#sDirect").textContent = state.directOK === null ? "확인 중…" : (state.directOK ? "가능 ✅ (1분 갱신)" : "차단됨 → 5분 자동 갱신");
+
+  /* 🌙 자동 잠금 시간 */
+  const range = nightRange();
+  const fromInput = $("#nightFromInput"), toInput = $("#nightToInput");
+  if (fromInput) fromInput.value = range.from;
+  if (toInput) toInput.value = range.to;
+  const rangeLabel = $("#nightRangeLabel");
+  if (rangeLabel) rangeLabel.textContent = `${range.from} ~ ${range.to}`;
+  const rangeState = $("#nightRangeState");
+  if (rangeState){
+    rangeState.textContent = (toMin(range.from) === toMin(range.to))
+      ? "시작과 끝이 같으면 잠그지 않아요."
+      : `${friendlyClock(range.from)} ~ ${friendlyClock(range.to)} 동안 잠겨요 · 지금은 ${nightHours() ? "잠금 시간" : "사용 시간"}`;
+  }
+}
+
+/* 🌙 잠금 시간 저장 — 바로 그 판단에 반영한다 */
+function saveNightRange(){
+  const prev = nightRange();
+  const from = padTime(($("#nightFromInput") || {}).value) || prev.from;
+  const to = padTime(($("#nightToInput") || {}).value) || prev.to;
+  if (toMin(from) === toMin(to)){
+    toast("시작과 끝이 같으면 잠기지 않아요 — 다른 시각을 골라 주세요");
+    return;
+  }
+  state.nightFrom = from;
+  state.nightTo = to;
+  try { localStorage.setItem(NIGHT_FROM_KEY, from); localStorage.setItem(NIGHT_TO_KEY, to); } catch {}
+  nightWasLocked = nightLocked();
+  renderNightLock();
+  if (!nightWasLocked){ loadAll().catch(()=>{}); setupTimer(); setupLive(); }
+  renderSettings();
+  toast(`🌙 잠금 시간 저장 — ${friendlyClock(from)} ~ ${friendlyClock(to)}`);
 }
 
 /* ── ⭐ 우리 팀 고르기 창 (상단 '⭐ 우리 팀' 버튼) ──
@@ -1399,14 +1448,18 @@ function renderAll(){
 let dataTimer = null, liveTimer = null;
 function setupTimer(){
   clearInterval(dataTimer);
+  dataTimer = null;
+  if (nightLocked()) return;               // 잠금 중에는 타이머를 돌리지 않는다
   if (state.interval > 0){
     dataTimer = setInterval(() => loadAll().catch(()=>{}), state.interval * 60000);
   }
 }
 function setupLive(){
   clearInterval(liveTimer);
+  liveTimer = null;
   const toggle = $("#liveToggle");
   toggle.classList.toggle("on", state.liveMode && !!state.directOK);
+  if (nightLocked()) return;
   if (state.liveMode && state.directOK){
     liveTimer = setInterval(refreshDirect, 60000);
   }
@@ -1607,13 +1660,48 @@ async function refreshDirect(){
    · 비밀번호는 dashboard/index.html 과 같은 시트('오늘의 공부 리스트' 의 '비밀번호' 열)에서
      읽어 이 기기에 캐시하고, 코드에 기본값은 두지 않는다.
    ========================================================= */
-const NIGHT_FROM_HOUR = 21;              // 21:00 부터 잠근다
-const NIGHT_TO_HOUR = 8;                 // 08:00 부터는 풀린다
+const NIGHT_FROM_KEY = "sports.nightFrom";   // 잠금 시작 (기본 21:00)
+const NIGHT_TO_KEY = "sports.nightTo";       // 잠금 끝 (기본 08:00)
+const NIGHT_DEFAULT_FROM = "21:00";
+const NIGHT_DEFAULT_TO = "08:00";
 const NIGHT_KEY = "sports.nightUnlock";   // 이번 밤에만 유효한 해제 표시
 const PIN_KEY = "sports.parentPin";       // 시트에서 받은 부모 비밀번호 캐시
 const SHEET_ID = "1zYhT97QHevopd7qUJA5u839WweGv7YkCQuIHORP1HWM";
 const SHEET_TAB = "오늘의 공부 리스트";
 
+function padTime(v){
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(v == null ? "" : v).trim());
+  if (!m) return null;
+  const h = Number(m[1]), mi = Number(m[2]);
+  if (h > 23 || mi > 59) return null;
+  return `${String(h).padStart(2,"0")}:${String(mi).padStart(2,"0")}`;
+}
+function toMin(v){
+  const p = padTime(v);
+  if (!p) return null;
+  const [h, m] = p.split(":").map(Number);
+  return h * 60 + m;
+}
+function loadClockPref(key, fallback){
+  try {
+    const p = padTime(localStorage.getItem(key));
+    return p || fallback;
+  } catch { return fallback; }
+}
+function nightRange(){
+  return {
+    from: padTime(state.nightFrom) || NIGHT_DEFAULT_FROM,
+    to: padTime(state.nightTo) || NIGHT_DEFAULT_TO,
+  };
+}
+/* '21:00' → '밤 9시', '08:00' → '아침 8시' (분이 있으면 '밤 9시 30분') */
+function friendlyClock(hhmm){
+  const p = padTime(hhmm) || NIGHT_DEFAULT_FROM;
+  const [h, m] = p.split(":").map(Number);
+  const word = h < 6 ? "밤" : h < 11 ? "아침" : h < 17 ? "낮" : h < 20 ? "저녁" : "밤";
+  const hh = (h % 12 === 0) ? 12 : (h % 12);
+  return `${word} ${hh}시${m ? ` ${m}분` : ""}`;
+}
 function loadNightUnlockKey(){
   try {
     const v = localStorage.getItem(NIGHT_KEY) || "";
@@ -1632,17 +1720,24 @@ function savePinCache(pin){
 function isoDate(d){
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
 }
+function minutesOfDay(d){ return d.getHours() * 60 + d.getMinutes(); }
+/* 잠금 시간 안인가 — 자정을 넘기는 구간(21:00~08:00)과 같은 날 구간(13:00~15:00) 모두 처리 */
 function nightHours(now){
-  const h = (now || kstNow()).getHours();
-  return h >= NIGHT_FROM_HOUR || h < NIGHT_TO_HOUR;
+  const d = now || kstNow();
+  const A = toMin(nightRange().from), B = toMin(nightRange().to);
+  if (A == null || B == null || A === B) return false;   // 시작=끝이면 잠금 없음
+  const cur = minutesOfDay(d);
+  return (A < B) ? (cur >= A && cur < B) : (cur >= A || cur < B);
 }
-/* 한 밤을 같은 구간으로 묶는 키 — 21:00~23:59 는 그날 날짜, 00:00~07:59 는 어제 날짜 */
+/* 한 구간을 같은 키로 묶는다 — 자정을 넘기는 구간은 새벽 시간을 '전날'로 본다 */
 function nightWindowKey(now){
-  now = now || kstNow();
-  if (!nightHours(now)) return null;
-  const d = new Date(now.getTime());
-  if (d.getHours() < NIGHT_TO_HOUR) d.setDate(d.getDate() - 1);
-  return isoDate(d);
+  const d = now || kstNow();
+  if (!nightHours(d)) return null;
+  const A = toMin(nightRange().from), B = toMin(nightRange().to);
+  const cur = minutesOfDay(d);
+  const day = new Date(d.getTime());
+  if (A > B && cur < B) day.setDate(day.getDate() - 1);   // 00:00~끝시각 → 어제 시작된 구간
+  return isoDate(day);
 }
 function nightLocked(){
   const k = nightWindowKey();
@@ -1767,29 +1862,38 @@ function renderNightLock(){
 }
 function updateNightClock(){
   const el = $("#nightLockClock");
+  const msg = $("#nightLockMsg");
+  const range = nightRange();
+  if (msg){
+    msg.innerHTML = `🌙 ${esc(friendlyClock(range.from))} ~ ${esc(friendlyClock(range.to))}는 잠금 시간이에요<br>`
+      + `${esc(friendlyClock(range.to))}가 되면 저절로 열려요`;
+  }
   if (!el) return;
   const now = kstNow();
   const hh = String(now.getHours()).padStart(2,"0");
   const mm = String(now.getMinutes()).padStart(2,"0");
   if (!nightHours(now)){ el.textContent = ""; return; }
-  const target = new Date(now.getTime());
-  if (now.getHours() >= NIGHT_TO_HOUR) target.setDate(target.getDate() + 1);
-  target.setHours(NIGHT_TO_HOUR, 0, 0, 0);
-  const mins = Math.max(0, Math.round((target.getTime() - now.getTime()) / 60000));
+  const B = toMin(range.to) ?? 8 * 60;
+  /* 끝나는 시각까지 남은 시간 — 자정을 넘기는 구간도 그대로 계산된다 */
+  const endAt = new Date(now.getTime());
+  endAt.setHours(Math.floor(B / 60), B % 60, 0, 0);
+  if (endAt.getTime() <= now.getTime()) endAt.setDate(endAt.getDate() + 1);
+  const mins = Math.max(0, Math.round((endAt.getTime() - now.getTime()) / 60000));
   const left = mins >= 60 ? `${Math.floor(mins/60)}시간 ${mins % 60}분` : `${mins}분`;
-  el.textContent = `지금 ${hh}:${mm} · 아침 8시까지 ${left}`;
+  el.textContent = `지금 ${hh}:${mm} · ${friendlyClock(range.to)}까지 ${left}`;
 }
-/* 20초마다 시계만 확인해서 21:00 / 08:00 을 지나면 잠금 화면을 저절로 바꿔 준다 */
+/* 20초마다 시계만 확인해서 잠금 시작·끝 시각을 지나면 잠금 화면을 저절로 바꿔 준다 */
 function nightTick(){
   const locked = nightLocked();
   const was = nightWasLocked;
   nightWasLocked = locked;
   renderNightLock();
   if (was === null || was === locked) return;
+  const range = nightRange();
   if (locked){
-    toast("🌙 밤 9시 — 자동 잠금이 시작돼요");
+    toast(`🌙 ${friendlyClock(range.from)} — 자동 잠금이 시작돼요`);
   } else {
-    toast("🌞 아침 8시 — 이제 사용할 수 있어요!");
+    toast(`🌞 ${friendlyClock(range.to)} — 이제 사용할 수 있어요!`);
     loadAll().catch(()=>{});
     setupTimer(); setupLive();
     if (state.liveMode) refreshDirect().catch(()=>{});
@@ -1905,7 +2009,7 @@ function unlockNight(){
   closePin();
   nightWasLocked = false;
   renderNightLock();
-  toast("🔓 부모님 확인 — 아침 8시까지 사용할 수 있어요");
+  toast(`🔓 부모님 확인 — ${friendlyClock(nightRange().to)}까지 사용할 수 있어요`);
   loadAll().catch(()=>{});
   setupTimer(); setupLive(); probeDirect();
 }
@@ -1997,6 +2101,7 @@ function bind(){
     setupTimer(); setupLive(); renderAll();
   };
   $("#hardRefreshBtn").onclick = hardRefreshApp;
+  $("#nightSaveBtn").onclick = saveNightRange;
   $("#resetPredBtn").onclick = () => {
     if (!Object.keys(state.preds).length){ alert("지울 예측 기록이 없어요."); return; }
     if (!confirm("내 승부예측 기록을 모두 지울까요? 되돌릴 수 없어요.")) return;
