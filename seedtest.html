@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex,nofollow">
+<title>승부예측 저장값 주입 (임시 검증용)</title>
+<style>body{font-family:system-ui,sans-serif;padding:24px;line-height:1.6}</style>
+</head>
+<body>
+<p>임시 검증용 페이지예요. 승부예측 저장값을 넣고 오늘의 경기장으로 이동합니다. 검증이 끝나면 이 파일은 지웁니다.</p>
+<pre id="log"></pre>
+<script>
+(function(){
+  var now = Date.now();
+  var preds = {
+    /* 사용자 태블릿에 잘못 남아 있던 그대로 — 삼성화재 승 예측인데 실제 OK저축은행 승(miss)로 저장된 기록 */
+    "kovo-37-2026-11-21": {pick:"home", at:now, date:"2026-11-21", time:"14:00",
+      home:"삼성화재", away:"OK저축은행", leagueName:"V리그 남자부", sport:"배구", emoji:"🏐",
+      res:"miss", actual:"away", hs:0, as:1, gradedAt:now},
+    /* 진짜 빗나간 예측(그대로 miss 로 남아야 한다) — SOOP 2:3 정관장 */
+    "kovo-38-2026-11-21": {pick:"home", at:now, date:"2026-11-21", time:"16:00",
+      home:"SOOP", away:"정관장", leagueName:"V리그 여자부", sport:"배구", emoji:"🏐",
+      res:null, actual:null},
+    /* 무승부 적중 — 포항 1:1 안양 */
+    "kleague-212": {pick:"draw", at:now, date:"2026-11-21", time:"14:00",
+      home:"포항", away:"안양", leagueName:"K리그1", sport:"축구", emoji:"⚽",
+      res:null, actual:null}
+  };
+  try{
+    localStorage.setItem("sports.preds.v1", JSON.stringify(preds));
+    document.getElementById("log").textContent = "저장 완료: " + Object.keys(preds).join(", ");
+  }catch(e){
+    document.getElementById("log").textContent = "저장 실패: " + e;
+  }
+  location.replace("./");
+})();
+</script>
+</body>
+</html>
