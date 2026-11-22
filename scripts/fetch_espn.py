@@ -1648,8 +1648,9 @@ def _kleague_detail(pid: str, kleague_cache: dict) -> dict:
 def _kleague_photo(img1: str, pid: str, photo_cache: dict | None = None) -> str:
     """K리그 공식 사진(4~5MB PNG)을 카드용 560px WebP 로 줄여 data/img/kleague 에 둔다.
 
-    공식 사진은 흰 배경 스튜디오 촬영이라, 위쪽 모서리에서부터 이어진 흰 배경만 투명하게 지운다
-    (유니폼 안쪽의 흰 부분은 배경과 이어지지 않아 그대로 남는다).
+    카드가 사진을 네모 프레임에 그대로 잘라 넣으므로 **누끼(배경 지우기)를 하지 않는다**.
+    공식 사진의 흰 스튜디오 배경을 지우면 얼굴·어깨 둘레에 지운 자국이 남아 '오려붙인' 것처럼
+    보였기 때문이다. 원본 사진을 그대로 줄여 저장한다.
     Pillow 가 없는 환경에서는 원본 URL 을 쓰되, 7일 동안은 다시 받지 않는다(4~5MB).
     """
     rel = f"img/kleague/{pid}.webp"
@@ -1665,23 +1666,12 @@ def _kleague_photo(img1: str, pid: str, photo_cache: dict | None = None) -> str:
             return hit["src"]
     try:
         raw = http_get(src, timeout=40)
-        from PIL import Image, ImageDraw  # noqa: PLC0415 — Pillow 가 없으면 원본 URL 로 넘어간다
+        from PIL import Image  # noqa: PLC0415 — Pillow 가 없으면 원본 URL 로 넘어간다
         import io  # noqa: PLC0415
-        image = Image.open(io.BytesIO(raw)).convert("RGB")
+        image = Image.open(io.BytesIO(raw)).convert("RGB")   # 투명 없이 원본 사진 그대로
         width, height = image.size
         if width > 560:
             image = image.resize((560, int(height * 560 / width)), Image.LANCZOS)
-        image = image.convert("RGBA")
-        seeds = [(2, 2), (image.width - 3, 2)]
-        for corner in ((2, image.height - 3), (image.width - 3, image.height - 3)):
-            px = image.getpixel(corner)
-            if px[0] > 235 and px[1] > 235 and px[2] > 235:
-                seeds.append(corner)
-        for seed in seeds:
-            try:
-                ImageDraw.floodfill(image, seed, (255, 255, 255, 0), thresh=38)
-            except Exception:  # noqa: BLE001
-                pass
         os.makedirs(KLEAGUE_IMG_DIR, exist_ok=True)
         image.save(path, "WEBP", quality=82, method=4)
         return "./data/" + rel
