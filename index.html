@@ -1621,7 +1621,7 @@ function gameCard(g){
     live: `<span class="badge live"><span class="dot"></span>LIVE</span>`,
     upcoming: `<span class="badge upcoming">🕒 예정</span>`,
     done: `<span class="badge done">✅ 종료</span>`,
-    cancel: `<span class="badge cancel">⛔ 취소</span>`,
+    cancel: `<span class="badge cancel">⛔ ${esc(g.status || "취소")}</span>`,
   }[g.state] || "";
 
   /* 카드에 보이는 스코어와 같은 기준(outcomeOf)으로 이긴 팀을 정한다 —
@@ -1649,7 +1649,7 @@ function gameCard(g){
   const m1 = g.state === "live"
     ? `🔴 LIVE${g.status ? " · " + g.status : ""}`
     : g.state === "done" ? `✅ 종료 · ${when}`
-    : g.state === "cancel" ? `⛔ 취소 · ${when}`
+    : g.state === "cancel" ? `⛔ ${g.status || "취소"} · ${when}`
     : `🕒 ${when || "시간 미정"}`;
   const meta = `<div class="meta">
         <div class="m1">${esc(m1)}</div>

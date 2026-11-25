@@ -322,6 +322,11 @@ def logo_of(team: dict) -> str:
 def status_ko(comp: dict, sport: str) -> tuple[str, str]:
     st = comp.get("status") or {}
     stype = (st.get("type") or {})
+    name = str(stype.get("name") or "").upper()
+    # 연기·취소·중단된 경기는 ESPN 이 state='post'(또는 pre)로 내려 주기도 한다.
+    # 그대로 두면 '종료 0:0' 또는 '예정'으로 앱에 남아 일정에 없는 경기가 계속 보인다.
+    if "POSTPONED" in name or "SUSPENDED" in name or "CANCEL" in name:
+        return "cancel", ("연기" if "POSTPONED" in name else "중단" if "SUSPENDED" in name else "취소")
     state = stype.get("state") or "pre"
     period = st.get("period") or 0
     clock = (st.get("displayClock") or "").strip()
@@ -564,6 +569,44 @@ def kr_game(gid, sport, league, league_name, date, time, state, status,
     }
 
 
+# ── 상태 안전장치 ────────────────────────────────────────────────
+# 아직 시작 전인데 LIVE, 끝났는데 LIVE 로 남는 일을 종목별 최대 경기 시간으로 한 번 더 막는다.
+# 수집처(KBL·KOVO·K리그·ESPN)가 상태를 잘못 주거나 늦게 고쳐도 앱에는 맞는 상태만 간다.
+MAX_LIVE_HOURS = {
+    "농구": 3.0, "해외농구": 3.0, "배구": 4.0, "축구": 3.0, "해외축구": 3.0,
+    "국제대회": 3.0, "미식축구": 4.5, "야구": 5.5, "해외야구": 5.5,
+}
+EARLY_LIVE_MARGIN = timedelta(minutes=20)      # 시작 20분 전부터는 LIVE 허용(지연 시작·준비 시간)
+
+
+def guard_states(games: list[dict], now: datetime) -> list[dict]:
+    """시작 시각과 종목별 경기 길이로 LIVE 를 한 번 더 검증한다.
+
+    - 시작 20분 넘게 남았는데 LIVE → 예정
+    - 시작하고 종목 최대 시간을 넘겼는데 LIVE → 점수가 있으면 종료, 없으면 연기(취소) 표시
+    """
+    for g in games:
+        start_text = f"{g.get('date') or ''} {g.get('time') or ''}".strip()
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", start_text):
+            continue
+        try:
+            start = datetime.strptime(start_text, "%Y-%m-%d %H:%M").replace(tzinfo=KST)
+        except ValueError:
+            continue
+        if g.get("state") != "live":
+            continue
+        maxh = MAX_LIVE_HOURS.get(str(g.get("sport") or ""), 4.0)
+        if start - now > EARLY_LIVE_MARGIN:
+            g.update({"state": "upcoming", "status": "", "onAir": False,
+                      "home": {**g["home"], "score": None}, "away": {**g["away"], "score": None},
+                      "winner": "DRAW"})
+        elif now - start > timedelta(hours=maxh):
+            has_score = g["home"].get("score") is not None or g["away"].get("score") is not None
+            g.update({"state": "done" if has_score else "cancel",
+                      "status": "종료" if has_score else "연기", "onAir": False})
+    return games
+
+
 def game_window(now: datetime) -> set[str]:
     return {(now + timedelta(days=d)).strftime("%Y-%m-%d") for d in (-1, 0, 1)}
 
@@ -594,9 +637,13 @@ def kleague_games(now: datetime) -> list[dict]:
                     state, status = "live", "하프타임"
                 elif raw in ("1H", "2H"):
                     state, status = "live", ("전반" if raw == "1H" else "후반")
-                elif raw:
-                    state, status = "live", "진행 중"
+                elif raw in ("P", "POSTPONED"):
+                    state, status = "cancel", "연기"
+                elif raw in ("C", "CANCEL", "CANCELED", "CANCELLED"):
+                    state, status = "cancel", "취소"
                 else:
+                    # 모르는 코드는 LIVE 로 단정하지 않는다 — 일정에 없는 경기가 '경기 중'으로
+                    # 보이던 문제(KBL D리그, 11-26 제보)를 다른 종목으로 넓히지 않기 위해서다.
                     state, status = "upcoming", ""
                 hg = m.get("homeGoal")
                 ag = m.get("awayGoal")
@@ -666,6 +713,30 @@ def kbo_standings() -> list[dict]:
              "metric": "pct", "teamCount": len(rows), "rows": rows}]
 
 
+# KBL 공식 API(match/list?tcodeList=all)는 1군 정규시즌만 주지 않는다. 2군 D리그(D1)·
+# EASL(EA)·올스타게임(AS)을 한 목록에 섞어서 준다. 1군/2군은 seasonGrade(1/2)로,
+# 어느 대회인지는 seasonCategory·seasonName1 로 갈린다.
+# D리그는 경희대 선승관에서 11:00~16:00 낮 시간에 열려서, 1군 일정이 없는 날(대표팀 휴식기)에
+# '프로농구 KBL 경기'처럼 앱에 올라가고 시작 시각만 지나면 LIVE 로 표시됐다(2026-11-26 제보:
+# "어제 프로농구 경기 중 아닌데 경기 중인 것처럼 나왔어. 한국가스공사 경기").
+KBL_PRO_CATEGORIES = {"R", "PO", "CP", "OM"}    # 정규시즌·플레이오프·챔피언결정전·OPEN MATCH DAY
+KBL_NOT_PRO_WORDS = ("D리그", "EASL", "올스타")
+
+
+def kbl_is_pro(m: dict) -> bool:
+    """KBL API 한 줄이 1군 프로 경기인가 — 2군 D리그·EASL·올스타게임은 앱에 올리지 않는다."""
+    if str(m.get("seasonGrade") or "").strip() == "2":
+        return False
+    if "D리그" in str(m.get("seasonName1") or ""):
+        return False
+    cat = str(m.get("seasonCategory") or "").strip().upper()
+    if cat and cat not in KBL_PRO_CATEGORIES:
+        return False
+    if any(word in str(m.get("seasonCategoryName") or "") for word in KBL_NOT_PRO_WORDS):
+        return False
+    return True
+
+
 def kbl_games(now: datetime) -> list[dict]:
     lo = (now - timedelta(days=1)).strftime("%Y%m%d")
     hi = (now + timedelta(days=1)).strftime("%Y%m%d")
@@ -675,12 +746,22 @@ def kbl_games(now: datetime) -> list[dict]:
         date_raw = str(m.get("gameDate") or "")
         if len(date_raw) != 8:
             continue
+        if not kbl_is_pro(m):
+            continue                      # 2군 D리그·EASL·올스타게임은 1군 일정이 아니다
+        tname_h, tname_a = m.get("tnameH"), m.get("tnameA")
+        if not (tname_h and tname_a):
+            continue                      # 한쪽 이름이 비면 카드에 '팀 vs' 로 깨진다 (EASL 초청팀 등)
         date = f"{date_raw[:4]}-{date_raw[4:6]}-{date_raw[6:]}"
         start = str(m.get("gameStart") or "")
         time_text = f"{start[:2]}:{start[2:4]}" if len(start) == 4 else ""
-        if int(m.get("isEnded") or 0) == 1:
+        # 상태는 KBL 이 주는 값(isEnded·isStarted)을 먼저 믿고, 시작 시각은 보조로만 쓴다.
+        # KBL 은 isStarted 를 채워 주므로 "시작 시각이 지났다"만으로 LIVE 를 만들지 않는다.
+        ended = int(m.get("isEnded") or 0) == 1
+        started = int(m.get("isStarted") or 0) == 1
+        by_clock = bool(time_text) and f"{date} {time_text}" <= now.strftime("%Y-%m-%d %H:%M")
+        if ended:
             state, status = "done", "종료"
-        elif time_text and date == now.strftime("%Y-%m-%d") and time_text <= now.strftime("%H:%M"):
+        elif started or by_clock:
             state, status = "live", "진행 중"
         else:
             state, status = "upcoming", ""
@@ -688,7 +769,7 @@ def kbl_games(now: datetime) -> list[dict]:
         ascore = m.get("scoreA") if state != "upcoming" else None
         out.append(kr_game(
             f"kbl-{m.get('gmkey')}", "농구", "kbl", "KBL", date, time_text, state, status,
-            kbl_name(m.get("tnameH")), hscore, kbl_name(m.get("tnameA")), ascore,
+            kbl_name(tname_h), hscore, kbl_name(tname_a), ascore,
             (m.get("stadiumname") or m.get("place") or "").strip() if isinstance(m.get("stadiumname"), str) else "",
             kbl_logo(m.get("logoH")), kbl_logo(m.get("logoA")),
         ))
@@ -742,6 +823,13 @@ def kovo_games(now: datetime) -> list[dict]:
         # 앱의 승부예측이 진 팀을 이긴 팀으로 채점해 버린다(11-21 삼성화재 0:1 → 3:1 사고).
         # 최종 세트 스코어 모양일 때만 종료로 본다.
         finished = len(nums) >= 2 and max(hscore, ascore) == 3 and min(hscore, ascore) <= 2
+        # KOVO 는 끝난 경기에 종료 시각(getime, '21:25')과 경기 시간(sptime, '02:11')을 채우고,
+        # 아직 안 열린 경기는 둘 다 빈 값·'0' 으로 준다. 세트 스코어가 3:x 모양이 아니어도
+        # 이 두 값이 차 있으면 끝난 경기다 — 연기·기록 지연으로 LIVE 가 계속 붙는 일을 막는다.
+        got_end = bool(str(m.get("getime") or "").strip())
+        got_dur = str(m.get("sptime") or "").strip() not in ("", "0", "0:00")
+        if got_end and got_dur and len(nums) >= 2:
+            finished = True
         started = bool(time_text) and f"{date} {time_text}" <= now.strftime("%Y-%m-%d %H:%M")
         if finished:
             state, status = "done", "종료"
@@ -1310,6 +1398,9 @@ def build_today(now: datetime) -> None:
                 games.append(game)
         except Exception as exc:  # noqa: BLE001
             print(f"  {fn.__name__} 실패: {exc}", flush=True)
+
+    # 상태 한 번 더 검증 — 시작 전·끝난 경기가 LIVE 로 남지 않게 한다(모든 종목 공통)
+    guard_states(games, now)
 
     order = {"live": 0, "upcoming": 1, "done": 2, "cancel": 3}
     games.sort(key=lambda g: (order.get(g["state"], 4), g.get("date") or "", g.get("time") or ""))
