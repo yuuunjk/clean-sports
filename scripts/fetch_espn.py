@@ -2275,22 +2275,21 @@ def kbl_profiles(pcodes: list[str], cache: dict) -> dict:
     **몸무게가 없다**(공식 페이지에 항목 자체가 없음). 몸무게까지 있는 곳은 시즌 선수 명단
     (`api-stats.kbl.or.kr/api/players?seasonCode=`) 이고, 한 번의 요청으로 시즌 전원(600여 명)을
     준다. 5분마다 도는 수집기가 매번 520KB 를 받지 않도록 결과를 leaders-cache.json 의
-    `kblbio` 에 24시간 남기고, 그 안에 없는 선수(순위에 새로 들어온 선수)만 다시 받는다.
+    `kblbio` 에 24시간 남긴다. 하루에 명단을 한 번만 받고, 그날 순위에 없는 선수는 다음 날 채운다.
 
     명단에는 주소·연락처·연봉 같은 값도 함께 오지만 카드에 쓰는 네 가지만 남긴다.
     """
     store = cache.get("kblbio") or {}
     players = {k: v for k, v in (store.get("players") or {}).items() if isinstance(v, dict)}
-    need = [p for p in pcodes if p and not _fresh(players.get(p), KBL_BIO_TTL)]
-    if not need:
-        return players
+    if _fresh(store, KBL_BIO_TTL):
+        return players          # 오늘 이미 명단을 받았다 — 없는 선수는 내일 다시 본다
     try:
         season = str(store.get("season") or "")
-        if not season or not _fresh(store, KBL_BIO_TTL):
-            recent = kr_get_json(f"https://kbl-api.sports2i.com/api/v1/Common/recent-seasons?seriesCd=1",
+        if not season:
+            recent = kr_get_json("https://kbl-api.sports2i.com/api/v1/Common/recent-seasons?seriesCd=1",
                                  KBL_STATS_HEADERS)
             rows = (recent or {}).get("data") if isinstance(recent, dict) else recent
-            season = str((rows or [{}])[0].get("seasonCode") or "") or season
+            season = str((rows or [{}])[0].get("seasonCode") or "")
         if not season:
             raise ValueError("시즌 코드를 받지 못했습니다")
         data = kr_get_json(f"{KBL_STATS}/api/players?seasonCode={season}", KBL_STATS_HEADERS)
@@ -2298,7 +2297,7 @@ def kbl_profiles(pcodes: list[str], cache: dict) -> dict:
         by_no = {str(r.get("playerNo") or ""): r for r in (roster or []) if r.get("playerNo")}
         stamp = _ts()
         got = 0
-        for pcode in need:
+        for pcode in pcodes:
             row = by_no.get(pcode)
             if not row:
                 continue
@@ -2310,10 +2309,12 @@ def kbl_profiles(pcodes: list[str], cache: dict) -> dict:
             }
             got += 1
         cache["kblbio"] = {"t": stamp, "season": season, "players": players}
-        print(f"  KBL 선수 신상 {got}/{len(need)}명 (시즌 {season} 명단 {len(by_no)}명)", flush=True)
+        print(f"  KBL 선수 신상 {got}/{len(pcodes)}명 (시즌 {season} 명단 {len(by_no)}명)", flush=True)
     except Exception as exc:  # noqa: BLE001
         print(f"  KBL 선수 신상 실패: {exc}", flush=True)
-        cache["kblbio"] = store or {"t": 0, "season": "", "players": players}
+        # 실패는 5분마다 다시 조르지 않고 한 시간 뒤에 다시 본다(명단이 520KB라서).
+        cache["kblbio"] = {"t": _ts() - KBL_BIO_TTL + 3600,
+                           "season": store.get("season") or "", "players": players}
     return players
 
 
