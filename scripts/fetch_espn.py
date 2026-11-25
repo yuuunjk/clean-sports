@@ -452,6 +452,8 @@ def fetch_scoreboard(league: dict, date_str: str) -> list[dict]:
 # KBO는 경기 API가 막혀 있어(비시즌이라 지금은 경기가 없다) 순위·소식만 담는다.
 KLEAGUE = "https://www.kleague.com"
 KBL_API = "https://api.kbl.or.kr"
+# KBL 선수 신상(키·몸무게·생년월일·국적) — 시즌 선수 명단이 통째로 오는 스탯 서버
+KBL_STATS = "https://api-stats.kbl.or.kr"
 KOVO_API = "https://user-api.kovo.co.kr"
 KBO_RANK = "https://www.koreabaseball.com/Record/TeamRank/TeamRankDaily.aspx"
 
@@ -494,6 +496,8 @@ KR_HEADERS = {
     "Accept-Language": "ko-KR,ko;q=0.9",
 }
 KBL_HEADERS = {"Channel": "WEB", "TeamCode": "", "lang": "ko", "X-Requested-With": "XMLHttpRequest"}
+# KBL 스탯 서버(kbl-api·api-stats)는 Referer 가 없으면 401·403 으로 막는다(공식 사이트에서 부르는 주소).
+KBL_STATS_HEADERS = {"Referer": "https://www.kbl.or.kr/"}
 
 V_TEAMS_KO = {
     "1001": "대한항공", "1002": "삼성화재", "1004": "KB손해보험", "1005": "현대캐피탈",
@@ -1468,6 +1472,7 @@ LEADER_CACHE = "leaders-cache.json"
 
 CORE_SEASON = "https://sports.core.api.espn.com/v2/sports"
 CARD_TTL = 14 * 86400          # 등번호·키·몸무게·나이·국적
+KBL_BIO_TTL = 24 * 3600        # KBL 선수 신상(시즌 명단 1회 요청 → 하루 보관)
 STATS_TTL = 24 * 3600          # 시즌 기록(해외축구 선수 상세)
 PHOTO_TTL = 30 * 86400         # 유럽축구 위키백과 사진 매칭 결과 (실패도 30일 기억)
 TEAM_TTL = 30 * 86400          # 팀 이름·엠블럼·팀 색
@@ -1619,6 +1624,8 @@ COUNTRY_CODE = {
     "키르기스스탄": "kgz", "Kyrgyzstan": "kgz", "카자흐스탄": "kaz", "Kazakhstan": "kaz",
     "타지키스탄": "taj", "Tajikistan": "taj", "투르크메니스탄": "tkm", "Turkmenistan": "tkm",
     "홍콩": "hkg", "Hong Kong": "hkg", "북한": "prk", "North Korea": "prk",
+    # KBL 명단에서 오는 표기 — '필리핀'·'터키'가 빠져 있어 카드 국기가 비어 있었다
+    "필리핀": "phi", "Philippines": "phi", "터키": "tur",
     "북마케도니아": "mkd", "North Macedonia": "mkd", "보스니아": "bih", "Bosnia": "bih",
     "알바니아": "alb", "Albania": "alb", "몬테네그로": "mne", "Montenegro": "mne",
     "조지아": "geo", "Georgia": "geo", "아제르바이잔": "aze", "Azerbaijan": "aze",
@@ -2236,6 +2243,80 @@ def _kleague_photo(img1: str, pid: str, photo_cache: dict | None = None) -> str:
         return src
 
 
+def _kbl_num(value) -> float | int | None:
+    """KBL 키·몸무게 값 → 카드용 숫자. 200.0 은 200 으로, 188.8 은 소수 한 자리로."""
+    try:
+        num = float(value)
+    except Exception:  # noqa: BLE001
+        return None
+    if num <= 0:
+        return None
+    return int(round(num)) if abs(num - round(num)) < 0.05 else round(num, 1)
+
+
+def _kbl_age(birthday: str) -> int | None:
+    """'19950829' → 만 나이 (K리그 생년월일과 같은 셈)."""
+    raw = re.sub(r"[^0-9]", "", str(birthday or ""))
+    if len(raw) != 8:
+        return None
+    try:
+        born = datetime.strptime(raw, "%Y%m%d").date()
+    except ValueError:
+        return None
+    today = datetime.now(KST).date()
+    age = today.year - born.year - ((today.month, today.day) < (born.month, born.day))
+    return age if 0 < age < 100 else None
+
+
+def kbl_profiles(pcodes: list[str], cache: dict) -> dict:
+    """KBL 선수 신상(키·몸무게·생년월일·국적) — 시즌 명단을 통째로 받아 캐시에 남긴다.
+
+    KBL 공식 선수 상세 페이지(/player/player/{pcode})는 신장·생년월일·국적만 주고
+    **몸무게가 없다**(공식 페이지에 항목 자체가 없음). 몸무게까지 있는 곳은 시즌 선수 명단
+    (`api-stats.kbl.or.kr/api/players?seasonCode=`) 이고, 한 번의 요청으로 시즌 전원(600여 명)을
+    준다. 5분마다 도는 수집기가 매번 520KB 를 받지 않도록 결과를 leaders-cache.json 의
+    `kblbio` 에 24시간 남기고, 그 안에 없는 선수(순위에 새로 들어온 선수)만 다시 받는다.
+
+    명단에는 주소·연락처·연봉 같은 값도 함께 오지만 카드에 쓰는 네 가지만 남긴다.
+    """
+    store = cache.get("kblbio") or {}
+    players = {k: v for k, v in (store.get("players") or {}).items() if isinstance(v, dict)}
+    need = [p for p in pcodes if p and not _fresh(players.get(p), KBL_BIO_TTL)]
+    if not need:
+        return players
+    try:
+        season = str(store.get("season") or "")
+        if not season or not _fresh(store, KBL_BIO_TTL):
+            recent = kr_get_json(f"https://kbl-api.sports2i.com/api/v1/Common/recent-seasons?seriesCd=1",
+                                 KBL_STATS_HEADERS)
+            rows = (recent or {}).get("data") if isinstance(recent, dict) else recent
+            season = str((rows or [{}])[0].get("seasonCode") or "") or season
+        if not season:
+            raise ValueError("시즌 코드를 받지 못했습니다")
+        data = kr_get_json(f"{KBL_STATS}/api/players?seasonCode={season}", KBL_STATS_HEADERS)
+        roster = (data or {}).get("data") if isinstance(data, dict) else data
+        by_no = {str(r.get("playerNo") or ""): r for r in (roster or []) if r.get("playerNo")}
+        stamp = _ts()
+        got = 0
+        for pcode in need:
+            row = by_no.get(pcode)
+            if not row:
+                continue
+            players[pcode] = {
+                "height": _kbl_num(row.get("pHeight")), "weight": _kbl_num(row.get("pWeight")),
+                "age": _kbl_age(row.get("birthday")),
+                "country": (row.get("country") or "").strip(),
+                "t": stamp,
+            }
+            got += 1
+        cache["kblbio"] = {"t": stamp, "season": season, "players": players}
+        print(f"  KBL 선수 신상 {got}/{len(need)}명 (시즌 {season} 명단 {len(by_no)}명)", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  KBL 선수 신상 실패: {exc}", flush=True)
+        cache["kblbio"] = store or {"t": 0, "season": "", "players": players}
+    return players
+
+
 def build_leaders(now: datetime) -> None:
     cache = read_json(LEADER_CACHE, {}) or {}
     athletes = cache.get("athletes") or {}
@@ -2446,6 +2527,14 @@ def build_leaders(now: datetime) -> None:
                 slot = by_player.setdefault(pcode, {"player": player, "values": {}})
                 slot["values"][key] = stat_text(item.get("value"), "avg1")
         cats = []
+        # 선수 신상(키·몸무게·나이·국적) — 순위에 나온 선수만 모아 한 번에 받아 온다
+        pcodes: list[str] = []
+        for part in parts or []:
+            for item in (part.get("list") or [])[:10]:
+                pcode = str((item.get("player") or {}).get("pcode") or "")
+                if pcode and pcode not in pcodes:
+                    pcodes.append(pcode)
+        bios = kbl_profiles(pcodes, cache) if pcodes else {}
         for part in parts or []:
             key = part.get("part")
             if key not in labels:
@@ -2456,6 +2545,7 @@ def build_leaders(now: datetime) -> None:
                 pcode = str(player.get("pcode") or "")
                 team_name = (player.get("tname") or "").strip()
                 merged = (by_player.get(pcode) or {}).get("values") or {}
+                bio = bios.get(pcode) or {}
                 tiles = [{"k": labels[k], "v": merged.get(k)} for k in ("score", "rb", "ast", "bs", "stl")]
                 tiles = [t for t in tiles if t["v"] not in (None, "", "-")]
                 if len(tiles) < 3 and item.get("gameCount"):
@@ -2468,8 +2558,8 @@ def build_leaders(now: datetime) -> None:
                     "jersey": str(player.get("backNum") or ""),
                     "position": pos_ko("basketball", player.get("pos") or "", ""),
                     "posShort": player.get("pos") or "",
-                    "height": None, "weight": None, "age": None,
-                    "citizenship": "", "flag": "",
+                    "height": bio.get("height"), "weight": bio.get("weight"), "age": bio.get("age"),
+                    "citizenship": bio.get("country") or "", "flag": flag_url(bio.get("country") or ""),
                     "color": KBL_COLOR.get(team_name, ""), "altColor": "",
                     "en": player.get("ename") or "",
                     "stats4": tiles[:4],
