@@ -2368,11 +2368,13 @@ def kbl_profiles(pcodes: list[str], cache: dict) -> dict:
     준다. 5분마다 도는 수집기가 매번 520KB 를 받지 않도록 결과를 leaders-cache.json 의
     `kblbio` 에 24시간 남긴다. 하루에 명단을 한 번만 받고, 그날 순위에 없는 선수는 다음 날 채운다.
 
-    명단에는 주소·연락처·연봉 같은 값도 함께 오지만 카드에 쓰는 네 가지만 남긴다.
+    명단에는 주소·연락처·연봉 같은 값도 함께 오지만 카드에 쓰는 몇 가지만 남긴다
+    (11-28 부터 등번호·포지션도 함께 — KBL 순위를 10위까지 넓히면서 카드 스탯을 채운다).
     """
     store = cache.get("kblbio") or {}
     players = {k: v for k, v in (store.get("players") or {}).items() if isinstance(v, dict)}
-    if _fresh(store, KBL_BIO_TTL):
+    # v2 — 등번호·포지션까지 담는다(11-28, KBL 순위 10위 확장과 함께). 예전 캐시는 한 번 다시 받는다.
+    if _fresh(store, KBL_BIO_TTL) and int(store.get("v") or 0) >= 2:
         return players          # 오늘 이미 명단을 받았다 — 없는 선수는 내일 다시 본다
     try:
         season = str(store.get("season") or "")
@@ -2396,17 +2398,197 @@ def kbl_profiles(pcodes: list[str], cache: dict) -> dict:
                 "height": _kbl_num(row.get("pHeight")), "weight": _kbl_num(row.get("pWeight")),
                 "age": _kbl_age(row.get("birthday")),
                 "country": (row.get("country") or "").strip(),
+                "jersey": str(row.get("backNum") or "").strip(),
+                "pos": (row.get("pos") or "").strip(),
                 "t": stamp,
             }
             got += 1
-        cache["kblbio"] = {"t": stamp, "season": season, "players": players}
+        cache["kblbio"] = {"t": stamp, "season": season, "v": 2, "players": players}
         print(f"  KBL 선수 신상 {got}/{len(pcodes)}명 (시즌 {season} 명단 {len(by_no)}명)", flush=True)
     except Exception as exc:  # noqa: BLE001
         print(f"  KBL 선수 신상 실패: {exc}", flush=True)
         # 실패는 5분마다 다시 조르지 않고 한 시간 뒤에 다시 본다(명단이 520KB라서).
-        cache["kblbio"] = {"t": _ts() - KBL_BIO_TTL + 3600,
+        cache["kblbio"] = {"t": _ts() - KBL_BIO_TTL + 3600, "v": 2,
                            "season": store.get("season") or "", "players": players}
     return players
+
+
+# KBL 공식 기록 서버의 부문별 순위 — 앱에 보이는 다섯 부문과 정렬 키(sortDataSc)
+KBL_RECORDS_API = f"{KBL_STATS}/api/records/player/general/traditional"
+KBL_PARTS = [
+    ("score", "득점", "SCORE", "score"),
+    ("rb", "리바운드", "RB", "rb"),
+    ("ast", "어시스트", "A_S", "aS"),
+    ("bs", "블록", "B_S", "bS"),
+    ("stl", "스틸", "S_T", "sT"),
+]
+
+
+def kbl_season_code(cache: dict) -> str:
+    """지금 시즌 코드(49 = 2026-27) — 선수 명단 캐시에 있으면 그대로 쓴다."""
+    season = str(((cache.get("kblbio") or {}).get("season")) or "")
+    if season:
+        return season
+    try:
+        recent = kr_get_json("https://kbl-api.sports2i.com/api/v1/Common/recent-seasons?seriesCd=1",
+                             KBL_STATS_HEADERS)
+        rows = (recent or {}).get("data") if isinstance(recent, dict) else recent
+        return str((rows or [{}])[0].get("seasonCode") or "")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  KBL 시즌 코드 실패: {exc}", flush=True)
+        return ""
+
+
+def kbl_rank_rows(season: str, sort_key: str, limit: int = 10) -> list[dict]:
+    """KBL 정규시즌 한 부문 1~limit위 — 공식 홈페이지 '선수기록 > 규정 순위'와 같은 값.
+
+    api.kbl.or.kr/league/season-leader 는 부문마다 5명만 주고 쿼리로 늘릴 수 없다.
+    KBL 공식 홈페이지가 쓰는 기록 엔드포인트는 sortDataSc 로 부문을, listCn 으로 행 수를
+    정할 수 있고, ruleCk=1 이면 앱에 보이는 '규정 순위'(최소 경기수 규정 적용) 그대로 준다.
+    한 행에 다섯 부문의 경기당 기록이 모두 실려 와 카드 스탯도 이걸로 채운다.
+    """
+    url = (f"{KBL_RECORDS_API}?seasonCode={season}&gameCode=01&sortDataSc={sort_key}"
+           f"&sortOrderSc=desc&listCn={limit}&pageNo=1&ruleCk=1&perCn=1&lastCn=0"
+           f"&partIfList=0&draftNo=0")
+    data = kr_get_json(url, KBL_STATS_HEADERS)
+    rows = (data or {}).get("data") if isinstance(data, dict) else data
+    return [r for r in (rows or []) if r.get("playerNo")][:limit]
+
+
+def kbl_leaders(cache: dict) -> dict | None:
+    """KBL 선수 순위 1~10위(다섯 부문) → leaders.json 의 KBL 리그 한 덩어리."""
+    season = kbl_season_code(cache)
+    if not season:
+        return None
+    tops = []
+    for key, label, sort_key, field in KBL_PARTS:
+        tops.append((key, label, field, kbl_rank_rows(season, sort_key)))
+    if not any(rows for _, _, _, rows in tops):
+        return None
+    pcodes: list[str] = []
+    for _, _, _, rows in tops:
+        for item in rows:
+            pcode = str(item.get("playerNo") or "")
+            if pcode and pcode not in pcodes:
+                pcodes.append(pcode)
+    bios = kbl_profiles(pcodes, cache) if pcodes else {}
+    emblem_by_team = {}
+    try:
+        for row in kbl_standings()[0]["rows"]:
+            emblem_by_team[row["team"]] = row["emblem"]
+    except Exception:  # noqa: BLE001
+        pass
+    cats = []
+    for key, label, field, rows in tops:
+        out = []
+        for item in rows:
+            pcode = str(item.get("playerNo") or "")
+            bio = bios.get(pcode) or {}
+            team_name = kbl_name((item.get("teamName1") or "").strip())
+            tiles = [{"k": lbl, "v": stat_text(item.get(src), "avg1")}
+                     for _, lbl, _, src in KBL_PARTS]
+            tiles = [t for t in tiles if t["v"] not in (None, "", "-")]
+            if len(tiles) < 3 and item.get("gameCount"):
+                tiles.append({"k": "경기", "v": str(item.get("gameCount"))})
+            out.append({
+                "rank": item.get("rankNo") or (len(out) + 1),
+                "player": (item.get("kname") or "").strip(),
+                "team": team_name, "emblem": emblem_by_team.get(team_name, ""),
+                "value": stat_text(item.get(field), "avg1"),
+                "id": pcode,
+                "photo": f"https://kbl.or.kr/files/kbl/players-photo/{pcode}.png",
+                "jersey": str(bio.get("jersey") or ""),
+                "position": pos_ko("basketball", bio.get("pos") or "", ""),
+                "posShort": bio.get("pos") or "",
+                "height": bio.get("height"), "weight": bio.get("weight"), "age": bio.get("age"),
+                "citizenship": bio.get("country") or "", "flag": flag_url(bio.get("country") or ""),
+                "color": KBL_COLOR.get(team_name, ""), "altColor": "",
+                "en": item.get("ename") or "",
+                "stats4": tiles[:4],
+            })
+        if out:
+            cats.append({"key": key, "name": label, "rows": out})
+    if not cats:
+        return None
+    print(f"  KBL 선수 순위 {len(cats)}부문 " +
+          "/".join(f"{c['name']} {len(c['rows'])}" for c in cats), flush=True)
+    return {"id": "kbl", "sport": "농구", "name": "KBL",
+            "season": "2026-27", "source": "KBL", "categories": cats}
+
+
+def kbl_leaders_legacy(leagues: list, cache: dict) -> None:
+    """예전 길 — api.kbl.or.kr/league/season-leader(부문당 5명).
+
+    규정 순위 엔드포인트가 막혔을 때만 부른다. 빈 KBL 순위보다 5명이라도 있는 게 낫다.
+    """
+    try:
+        parts = kr_get_json(f"{KBL_API}/league/season-leader", KBL_HEADERS)
+        emblem_by_team = {}
+        try:
+            for row in kbl_standings()[0]["rows"]:
+                emblem_by_team[row["team"]] = row["emblem"]
+        except Exception:  # noqa: BLE001
+            pass
+        labels = {"score": "득점", "rb": "리바운드", "ast": "어시스트", "bs": "블록", "stl": "스틸"}
+        # 선수별로 5부문 값을 모아 카드 스탯 4칸을 만든다
+        by_player: dict[str, dict] = {}
+        for part in parts or []:
+            key = part.get("part")
+            if key not in labels:
+                continue
+            for item in (part.get("list") or [])[:10]:
+                player = item.get("player") or {}
+                pcode = str(player.get("pcode") or "")
+                if not pcode:
+                    continue
+                slot = by_player.setdefault(pcode, {"player": player, "values": {}})
+                slot["values"][key] = stat_text(item.get("value"), "avg1")
+        cats = []
+        # 선수 신상(키·몸무게·나이·국적) — 순위에 나온 선수만 모아 한 번에 받아 온다
+        pcodes: list[str] = []
+        for part in parts or []:
+            for item in (part.get("list") or [])[:10]:
+                pcode = str((item.get("player") or {}).get("pcode") or "")
+                if pcode and pcode not in pcodes:
+                    pcodes.append(pcode)
+        bios = kbl_profiles(pcodes, cache) if pcodes else {}
+        for part in parts or []:
+            key = part.get("part")
+            if key not in labels:
+                continue
+            rows = []
+            for pos, item in enumerate((part.get("list") or [])[:10], start=1):
+                player = item.get("player") or {}
+                pcode = str(player.get("pcode") or "")
+                team_name = kbl_name((player.get("tname") or "").strip())
+                merged = (by_player.get(pcode) or {}).get("values") or {}
+                bio = bios.get(pcode) or {}
+                tiles = [{"k": labels[k], "v": merged.get(k)} for k in ("score", "rb", "ast", "bs", "stl")]
+                tiles = [t for t in tiles if t["v"] not in (None, "", "-")]
+                if len(tiles) < 3 and item.get("gameCount"):
+                    tiles.append({"k": "경기", "v": str(item.get("gameCount"))})
+                rows.append({
+                    "rank": pos, "player": (player.get("pname") or "").strip(),
+                    "team": team_name, "emblem": emblem_by_team.get(team_name, ""),
+                    "value": stat_text(item.get("value"), "avg1"),
+                    "id": pcode, "photo": player.get("img") or "",
+                    "jersey": str(player.get("backNum") or ""),
+                    "position": pos_ko("basketball", player.get("pos") or "", ""),
+                    "posShort": player.get("pos") or "",
+                    "height": bio.get("height"), "weight": bio.get("weight"), "age": bio.get("age"),
+                    "citizenship": bio.get("country") or "", "flag": flag_url(bio.get("country") or ""),
+                    "color": KBL_COLOR.get(team_name, ""), "altColor": "",
+                    "en": player.get("ename") or "",
+                    "stats4": tiles[:4],
+                })
+            if rows:
+                cats.append({"key": key, "name": labels[key], "rows": rows})
+        if cats:
+            leagues.append({"id": "kbl", "sport": "농구", "name": "KBL",
+                            "season": "2026-27", "source": "KBL", "categories": cats})
+            print(f"  KBL 선수 순위(대체) {len(cats)}부문", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  KBL 선수 순위(대체) 실패: {exc}", flush=True)
 
 
 def build_leaders(now: datetime) -> None:
@@ -2595,75 +2777,15 @@ def build_leaders(now: datetime) -> None:
                             "season": str(year), "source": "K리그", "categories": cats})
             print(f"  {lname} 선수 순위 {len(cats)}부문", flush=True)
 
-    # ── KBL ──
+    # ── KBL ── (부문별 1~10위 · 공식 규정 순위)
     try:
-        parts = kr_get_json(f"{KBL_API}/league/season-leader", KBL_HEADERS)
-        emblem_by_team = {}
-        try:
-            for row in kbl_standings()[0]["rows"]:
-                emblem_by_team[row["team"]] = row["emblem"]
-        except Exception:  # noqa: BLE001
-            pass
-        labels = {"score": "득점", "rb": "리바운드", "ast": "어시스트", "bs": "블록", "stl": "스틸"}
-        # 선수별로 5부문 값을 모아 카드 스탯 4칸을 만든다
-        by_player: dict[str, dict] = {}
-        for part in parts or []:
-            key = part.get("part")
-            if key not in labels:
-                continue
-            for item in (part.get("list") or [])[:10]:
-                player = item.get("player") or {}
-                pcode = str(player.get("pcode") or "")
-                if not pcode:
-                    continue
-                slot = by_player.setdefault(pcode, {"player": player, "values": {}})
-                slot["values"][key] = stat_text(item.get("value"), "avg1")
-        cats = []
-        # 선수 신상(키·몸무게·나이·국적) — 순위에 나온 선수만 모아 한 번에 받아 온다
-        pcodes: list[str] = []
-        for part in parts or []:
-            for item in (part.get("list") or [])[:10]:
-                pcode = str((item.get("player") or {}).get("pcode") or "")
-                if pcode and pcode not in pcodes:
-                    pcodes.append(pcode)
-        bios = kbl_profiles(pcodes, cache) if pcodes else {}
-        for part in parts or []:
-            key = part.get("part")
-            if key not in labels:
-                continue
-            rows = []
-            for pos, item in enumerate((part.get("list") or [])[:10], start=1):
-                player = item.get("player") or {}
-                pcode = str(player.get("pcode") or "")
-                team_name = (player.get("tname") or "").strip()
-                merged = (by_player.get(pcode) or {}).get("values") or {}
-                bio = bios.get(pcode) or {}
-                tiles = [{"k": labels[k], "v": merged.get(k)} for k in ("score", "rb", "ast", "bs", "stl")]
-                tiles = [t for t in tiles if t["v"] not in (None, "", "-")]
-                if len(tiles) < 3 and item.get("gameCount"):
-                    tiles.append({"k": "경기", "v": str(item.get("gameCount"))})
-                rows.append({
-                    "rank": pos, "player": (player.get("pname") or "").strip(),
-                    "team": team_name, "emblem": emblem_by_team.get(team_name, ""),
-                    "value": stat_text(item.get("value"), "avg1"),
-                    "id": pcode, "photo": player.get("img") or "",
-                    "jersey": str(player.get("backNum") or ""),
-                    "position": pos_ko("basketball", player.get("pos") or "", ""),
-                    "posShort": player.get("pos") or "",
-                    "height": bio.get("height"), "weight": bio.get("weight"), "age": bio.get("age"),
-                    "citizenship": bio.get("country") or "", "flag": flag_url(bio.get("country") or ""),
-                    "color": KBL_COLOR.get(team_name, ""), "altColor": "",
-                    "en": player.get("ename") or "",
-                    "stats4": tiles[:4],
-                })
-            if rows:
-                cats.append({"key": key, "name": labels[key], "rows": rows})
-        if cats:
-            leagues.append({"id": "kbl", "sport": "농구", "name": "KBL",
-                            "season": "2026-27", "source": "KBL", "categories": cats})
-            print(f"  KBL 선수 순위 {len(cats)}부문", flush=True)
+        entry = kbl_leaders(cache)
+        if not entry:
+            raise ValueError("규정 순위 응답이 비었습니다")
+        leagues.append(entry)
     except Exception as exc:  # noqa: BLE001
-        print(f"  KBL 선수 순위 실패: {exc}", flush=True)
+        print(f"  KBL 선수 순위(규정 순위) 실패 → 시즌리더 5명으로 대체: {exc}", flush=True)
+        kbl_leaders_legacy(leagues, cache)
 
     # ── 유럽축구 사진 (위키백과·위키미디어) — 모든 리그를 모아 한 번에 ──
     if soccer_players:
